@@ -23,6 +23,8 @@ from ecad.image_generators.load_image_generator import (
 )
 from pymoo.algorithms.moo.nsga2 import NSGA2
 
+from ecad.image_generators.load_text_generator import get_text_generator_type
+
 
 def get_offline_eval_commands_single_gpu_from_manager(
     manager: PopulationIOManager,
@@ -36,6 +38,7 @@ def get_offline_eval_commands_single_gpu_from_manager(
     image_naming_mode: str | None = None,
     exactly_n_images: int = 1000,
     regen_if_not_n_images: int = 1000,
+    gen_images : bool = False,
 ) -> tuple[str, str, str]:
     """
     Given a PopulationIOManager instance, generate the offline evaluation commands
@@ -67,67 +70,129 @@ def get_offline_eval_commands_single_gpu_from_manager(
         if regen_if_not_n_images is not None
         else ""
     )
+    
+    if gen_images:
+        gen_images_cmd = (
+            f"python ecad/benchmark/generate_images.py "
+            f"--image-generator {image_generator} "
+            f"{embedding_dir_str}"
+            f"--output-dir {image_dir} "
+            f"--schedule-dir {schedule_dir} "
+            f"{num_images_per_prompt_str}"
+            f"{batch_size_str}"
+            f"{regen_str}"
+        ).strip()
 
-    gen_images_cmd = (
-        f"python ecad/benchmark/generate_images.py "
-        f"--image-generator {image_generator} "
-        f"{embedding_dir_str}"
-        f"--output-dir {image_dir} "
-        f"--schedule-dir {schedule_dir} "
-        f"{num_images_per_prompt_str}"
-        f"{batch_size_str}"
-        f"{regen_str}"
-    ).strip()
+        # Build command for scoring images using score_images.py
+        file_mode_str = (
+            f"--file-mode {file_mode} " if file_mode is not None else ""
+        )
+        image_naming_mode_str = (
+            f"--image-naming-mode {image_naming_mode} "
+            if image_naming_mode is not None
+            else ""
+        )
+        benchmark_prompts_str = (
+            f"--benchmark-prompts {benchmark_prompts} "
+            if benchmark_prompts is not None
+            else ""
+        )
+        exactly_n_str = (
+            f"--exactly-n-images {exactly_n_images} "
+            if exactly_n_images is not None
+            else ""
+        )
 
-    # Build command for scoring images using score_images.py
-    file_mode_str = (
-        f"--file-mode {file_mode} " if file_mode is not None else ""
-    )
-    image_naming_mode_str = (
-        f"--image-naming-mode {image_naming_mode} "
-        if image_naming_mode is not None
-        else ""
-    )
-    benchmark_prompts_str = (
-        f"--benchmark-prompts {benchmark_prompts} "
-        if benchmark_prompts is not None
-        else ""
-    )
-    exactly_n_str = (
-        f"--exactly-n-images {exactly_n_images} "
-        if exactly_n_images is not None
-        else ""
-    )
+        score_images_cmd = (
+            f"python ecad/benchmark/score_images.py "
+            f"{benchmark_prompts_str}"
+            f"--image-dir {image_dir} "
+            f"{exactly_n_str}"
+            f"--delete-after "
+            f"{file_mode_str}"
+            f"{image_naming_mode_str}"
+        ).strip()
 
-    score_images_cmd = (
-        f"python ecad/benchmark/score_images.py "
-        f"{benchmark_prompts_str}"
-        f"--image-dir {image_dir} "
-        f"{exactly_n_str}"
-        f"--delete-after "
-        f"{file_mode_str}"
-        f"{image_naming_mode_str}"
-    ).strip()
+        # Build command for computing metrics using compute_macs.py
+        compute_metrics_cmd = (
+            f"python ecad/benchmark/compute_macs.py "
+            f"--image-generator {image_generator} "
+            f"--input-dir {schedule_dir}"
+        )
 
-    # Build command for computing metrics using compute_macs.py
-    compute_metrics_cmd = (
-        f"python ecad/benchmark/compute_macs.py "
-        f"--image-generator {image_generator} "
-        f"--input-dir {schedule_dir}"
-    )
+        if print_commands:
+            print("Single GPU execution commands:")
+            print("\nCommand to generate images:")
+            print(gen_images_cmd)
+            print("\nCommand to score images:")
+            print(score_images_cmd)
+            print("\nCommand to compute metrics:")
+            print(compute_metrics_cmd)
 
-    if print_commands:
-        print("Single GPU execution commands:")
-        print("\nCommand to generate images:")
-        print(gen_images_cmd)
-        print("\nCommand to score images:")
-        print(score_images_cmd)
-        print("\nCommand to compute metrics:")
-        print(compute_metrics_cmd)
-
-    return gen_images_cmd, score_images_cmd, compute_metrics_cmd
+        return gen_images_cmd, score_images_cmd, compute_metrics_cmd
 
 
+    else:
+        gen_text_cmd = (
+            f"python ecad/benchmark/generate_text.py "
+            f"--image-generator {image_generator} "
+            f"{embedding_dir_str}"
+            f"--output-dir {image_dir} "
+            f"--schedule-dir {schedule_dir} "
+            f"{num_images_per_prompt_str}"
+            f"{batch_size_str}"
+            f"{regen_str}"
+        ).strip()
+
+        # Build command for scoring texts using score_text.py
+        file_mode_str = (
+            f"--file-mode {file_mode} " if file_mode is not None else ""
+        )
+        image_naming_mode_str = (
+            f"--image-naming-mode {image_naming_mode} "
+            if image_naming_mode is not None
+            else ""
+        )
+        benchmark_prompts_str = (
+            f"--benchmark-prompts {benchmark_prompts} "
+            if benchmark_prompts is not None
+            else ""
+        )
+        exactly_n_str = (
+            f"--exactly-n-images {exactly_n_images} "
+            if exactly_n_images is not None
+            else ""
+        )
+
+        score_text_cmd = (
+            f"python ecad/benchmark/score_text.py "
+            f"{benchmark_prompts_str}"
+            f"--text-dir {image_dir} "
+            f"{exactly_n_str}"
+            f"--delete-after "
+            f"{file_mode_str}"
+            f"{image_naming_mode_str}"
+        ).strip()
+
+        # Build command for computing metrics using compute_macs.py
+        compute_metrics_cmd = (
+            f"python ecad/benchmark/compute_macs.py "
+            f"--image-generator {image_generator} "
+            f"--input-dir {schedule_dir}"
+        )
+
+        if print_commands:
+            print("Single GPU execution commands:")
+            print("\nCommand to generate images:")
+            print(gen_text_cmd)
+            print("\nCommand to score texts:")
+            print(score_text_cmd)
+            print("\nCommand to compute metrics:")
+            print(compute_metrics_cmd)
+
+        return gen_text_cmd, score_text_cmd, compute_metrics_cmd
+    
+    
 def run_single_gpu_command(
     command: str, print_eval_outputs: bool = False
 ) -> None:
@@ -143,19 +208,21 @@ def run_single_gpu_command(
     try:
         print(f"\nExecuting: {command}")
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, check=True
+            command, shell=True, text=True, check=True,
         )
         print(f"Command completed successfully")
         if print_eval_outputs and result.stdout:
             print(f"STDOUT: {result.stdout.strip()}")
         if result.stderr:
             print(f"STDERR: {result.stderr.strip()}")
+            
     except subprocess.CalledProcessError as err:
         print(f"Command failed with exit code {err.returncode}")
-        print(f"STDERR: {err.stderr.strip()}")
-        raise RuntimeError(
-            f"Command execution failed: {err.stderr.strip()}"
-        ) from err
+        if err.stderr: 
+            print(f"STDERR: {err.stderr.strip()}")
+            raise RuntimeError(
+                f"Command execution failed: {err.stderr.strip()}"
+            ) from err
 
 
 def train_nsga2_single_gpu(
@@ -209,7 +276,7 @@ def train_nsga2_single_gpu(
             # Execute commands sequentially for single GPU (blocking execution)
             try:
                 print("\n" + "=" * 80)
-                print("Starting image generation...")
+                print("Starting image/text generation...")
                 print("=" * 80)
                 run_single_gpu_command(gen_images_cmd, print_eval_outputs)
 
@@ -218,6 +285,8 @@ def train_nsga2_single_gpu(
                 print("=" * 80)
                 run_single_gpu_command(score_images_cmd, print_eval_outputs)
 
+                print('Stopping before computing metrics...')
+                exit()
                 print("\n" + "=" * 80)
                 print("Starting metrics computation...")
                 print("=" * 80)
@@ -271,7 +340,13 @@ def main():
     """Main entry point for single GPU execution."""
     args = parse_args()
 
-    image_generator_type = get_image_generator_type(args.image_generator)
+    try: 
+        image_generator_type = get_image_generator_type(args.image_generator)
+    except ValueError as e:
+        text_generator_type = get_text_generator_type(args.image_generator)
+        image_generator_type = text_generator_type
+        print('Using text generator...')
+    
     manager = initialize_manager(args, image_generator_type)
 
     try:

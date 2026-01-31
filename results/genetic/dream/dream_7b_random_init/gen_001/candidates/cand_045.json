@@ -1,0 +1,3256 @@
+{
+    "cache_schedule": {
+        "num_blocks": 32,
+        "num_inference_steps": 20,
+        "name": "dream_7b_random_init_gen_001_cand_045",
+        "attributes": {
+            "num_affected_steps": 20,
+            "num_affected_layers": 32,
+            "total_num_affected_layers": 557
+        },
+        "schedule": {
+            "000": {
+                "0": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                }
+            },
+            "001": {
+                "0": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "8": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "11": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "25": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "27": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                }
+            },
+            "002": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "3": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "16": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "18": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "25": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                }
+            },
+            "003": {
+                "0": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "18": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                }
+            },
+            "004": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "11": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "18": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "20": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "27": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                }
+            },
+            "005": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "2": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "3": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "15": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                }
+            },
+            "006": {
+                "0": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "2": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "3": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "8": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "11": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "16": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "25": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "27": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "29": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                }
+            },
+            "007": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "3": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "20": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "27": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                }
+            },
+            "008": {
+                "0": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "8": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "27": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "29": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                }
+            },
+            "009": {
+                "0": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "17": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "29": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                }
+            },
+            "010": {
+                "0": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "2": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "3": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "15": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "16": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "18": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "29": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                }
+            },
+            "011": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "15": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "17": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "18": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                }
+            },
+            "012": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "2": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "11": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "15": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                }
+            },
+            "013": {
+                "0": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "11": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "17": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "20": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "27": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                }
+            },
+            "014": {
+                "0": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "16": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "24": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "25": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                }
+            },
+            "015": {
+                "0": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "1": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "2": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "9": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "15": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "25": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                }
+            },
+            "016": {
+                "0": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "2": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "8": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "11": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "21": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "29": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                }
+            },
+            "017": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "2": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "3": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "4": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "8": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "17": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "18": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "26": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "29": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "31": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                }
+            },
+            "018": {
+                "0": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "5": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "6": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "8": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "10": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "12": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "13": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "14": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "15": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "17": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "18": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "25": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "28": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "29": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "30": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                }
+            },
+            "019": {
+                "0": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "1": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "2": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "3": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "4": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "5": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "6": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "7": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "8": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "9": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "10": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                },
+                "11": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "12": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "13": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "14": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "15": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "16": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": true
+                },
+                "17": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": true
+                },
+                "18": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "19": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "20": {
+                    "layer": true,
+                    "kv": false,
+                    "mlp": false
+                },
+                "21": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "22": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "23": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "24": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "25": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "26": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "27": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": true
+                },
+                "28": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": true
+                },
+                "29": {
+                    "layer": false,
+                    "kv": false,
+                    "mlp": false
+                },
+                "30": {
+                    "layer": true,
+                    "kv": true,
+                    "mlp": false
+                },
+                "31": {
+                    "layer": false,
+                    "kv": true,
+                    "mlp": false
+                }
+            }
+        }
+    },
+    "config": {},
+    "metrics": {}
+}

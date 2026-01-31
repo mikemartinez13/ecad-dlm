@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import gc
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Generic, TypeVar, Sequence
 import torch
 
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
@@ -25,8 +25,9 @@ from ecad.types import (
     PromptEmbeddingType,
 )
 
+PE = TypeVar("PE", bound=PromptEmbedding)
 
-class ImageGenerator(ABC):
+class ImageGenerator(ABC, Generic[PE]):
     """
     Base class for image generators. Provides common functionality for different
     image generation models like PixArt and FLUX.
@@ -349,7 +350,7 @@ class ImageGenerator(ABC):
 
     @abstractmethod
     def generate_images(
-        self, prompt_embeds: PromptEmbeddingType, images_per_prompt, **kwargs
+        self, prompt_embeds: PE, images_per_prompt, **kwargs
     ):
         """
         Generate images from prompt embeddings.

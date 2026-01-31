@@ -8,15 +8,30 @@ import torch
 from calflops import calculate_flops
 
 from ecad.image_generators.image_generator import ImageGenerator
+
 from ecad.image_generators.flux_image_generator import (
     FluxImageGenerator,
 )
+
 from ecad.image_generators.load_image_generator import (
     ImageGeneratorRegistry,
     get_image_generator_type,
 )
 from ecad.image_generators.pixart_image_generator import (
     PixArtImageGenerator,
+)
+
+# text generator imports 
+
+from ecad.image_generators.text_generator import TextGenerator 
+
+from ecad.image_generators.dream_text_generator import (
+    DreamTextGenerator,
+)
+
+from ecad.image_generators.load_text_generator import (
+    TextGeneratorRegistry,
+    get_text_generator_type,
 )
 
 WEIGHTS_TO_SHAPES = {

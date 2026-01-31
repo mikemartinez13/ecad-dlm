@@ -13,6 +13,7 @@ from pymoo.core.population import Population
 from pymoo.operators.crossover.pntx import PointCrossover
 from pymoo.operators.mutation.bitflip import BitflipMutation
 
+from ecad.genetic.dream_problem import Dream7bCachingScheduleProblem
 from ecad.genetic.flux_population_io_manager import (
     FluxPopulationIOManager,
 )
@@ -20,6 +21,10 @@ from ecad.genetic.flux_problem import FluxCachingScheduleProblem
 from ecad.genetic.pixart_population_io_manager import (
     PixArtPopulationIOManager,
 )
+from ecad.genetic.dream_population_io_manager import (
+    DreamPopulationIOManager,
+)
+
 from ecad.genetic.pixart_problem import PixArtCachingScheduleProblem
 from ecad.genetic.sampling import BinaryRandomSampling
 from ecad.genetic.population_io_manager import (
@@ -32,11 +37,18 @@ from ecad.image_generators.load_image_generator import (
     ImageGeneratorRegistry,
     get_image_generator_type,
 )
+from ecad.image_generators.load_text_generator import (
+    TextGeneratorRegistry,
+)
 from ecad.image_generators.pixart_image_generator import (
     PixArtImageGenerator,
 )
 from ecad.image_generators.flux_image_generator import (
     FluxImageGenerator,
+)
+
+from ecad.image_generators.dream_text_generator import (
+    DreamTextGenerator,
 )
 
 
@@ -51,7 +63,7 @@ def get_base_argparser() -> argparse.ArgumentParser:
         type=str,
         required=True,
         help="The name of the image generator to use.",
-        choices=list(ImageGeneratorRegistry.registry.keys()),
+        choices=list(ImageGeneratorRegistry.registry.keys()) + list(TextGeneratorRegistry.registry.keys()),
     )
     parser.add_argument(
         "--load-from",
@@ -105,7 +117,7 @@ def get_base_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--benchmark-prompts",
         type=Path,
-        required=True,
+        required=False,
         help="JSON file containing benchmark prompts.",
     )
     parser.add_argument(
@@ -180,6 +192,11 @@ def validate_base_args(args: argparse.Namespace) -> None:
             "print-not-submit can only be used with num_cycles=1."
         )
 
+    if args.benchmark_prompts is None and 'Dream' not in args.image_generator:
+        raise ValueError(
+            "Must provide benchmark prompts for image pipelines."
+        ) 
+    
 
 def init_gen_0(
     manager: PopulationIOManager, image_generator_type: type[ImageGenerator]
@@ -221,6 +238,14 @@ def init_gen_0(
             manager.num_single_blocks,
             manager.num_component_types_full,
             manager.num_component_types_single,
+            manager.min_diff_from_default,
+        )
+    elif issubclass(image_generator_type, DreamTextGenerator):
+        assert isinstance(manager, DreamPopulationIOManager)
+        problem = Dream7bCachingScheduleProblem(
+            manager.num_inference_steps,
+            manager.num_blocks,
+            manager.num_component_types,
             manager.min_diff_from_default,
         )
     else:
@@ -306,6 +331,8 @@ def initialize_manager(
         manager_type = PixArtPopulationIOManager
     elif issubclass(image_generator_type, FluxImageGenerator):
         manager_type = FluxPopulationIOManager
+    elif issubclass(image_generator_type, DreamTextGenerator):
+        manager_type = DreamPopulationIOManager
     else:
         raise ValueError(
             f"Unsupported Image Generator type {image_generator_type}."

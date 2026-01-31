@@ -1,4 +1,4 @@
-from typing import Any, TypeVar, TypedDict
+from typing import Any, TypeVar, TypedDict, Optional
 from typing_extensions import NotRequired
 import torch
 
@@ -34,6 +34,18 @@ class FluxPromptEmbedding(PromptEmbedding):
     pooled_prompt_embeds: torch.Tensor
     text_ids: torch.Tensor | None
 
+class DreamPromptEmbedding(PromptEmbedding):
+    """Embedding(s) for prompt(s) used by Dream.
+
+    Attributes:
+        input_ids: one or more input ids.
+        attention_mask: one or more attention masks.
+    """
+
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    prompt_embeds: Optional[torch.Tensor]
+    prompt_attention_mask: Optional[torch.Tensor]
 
 class PipelineConfig(TypedDict):
     name: str
@@ -45,6 +57,12 @@ class ImageGeneratorConfig(TypedDict):
     transformer_weights: NotRequired[str]
     pipeline_weights: NotRequired[str]
     image_generator: NotRequired[str]
+
+class TextGeneratorConfig(TypedDict):
+    pipeline: NotRequired[PipelineConfig]
+    transformer_weights: NotRequired[str]
+    pipeline_weights: NotRequired[str]
+    text_generator: NotRequired[str]
 
 
 class CustomFuncDict(TypedDict):

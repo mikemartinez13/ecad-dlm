@@ -1,0 +1,11 @@
+{
+    "name": "dream_7b_random_init",
+    "population_dir": "results/genetic/dream/dream_7b_random_init",
+    "benchmark_dir": "results/benchmark/genetic/dream/dream_7b_random_init",
+    "generation_num": 1,
+    "num_inference_steps": 20,
+    "min_diff_from_default": 1,
+    "population_size": 72,
+    "num_blocks": 32,
+    "num_component_types": 3
+}
