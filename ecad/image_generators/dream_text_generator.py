@@ -60,7 +60,7 @@ class DreamTextGenerator(TextGenerator, ABC):
     DEFAULT_TOKENIZER_NAME = None
 
     DEFAULT_NUM_LAYERS = 32
-    DEFAULT_NUM_INFERENCE_STEPS = 20
+    DEFAULT_NUM_INFERENCE_STEPS = 128
 
     # Edited model class with cache-schedule-aware decoder layers.
     DLM_MODEL_CLS: Type[PreTrainedModel] = DreamForCausalLMEdited
@@ -464,6 +464,9 @@ class DreamTextGenerator(TextGenerator, ABC):
                 generator=self.random_generator,
                 generation_tokens_hook_func=per_step_tokens_hook,
             )
+
+            print(out)
+            time.sleep(5)  # brief pause to ensure printed output is readable before decoding
 
             if hasattr(out, "sequences"):
                 seqs = out.sequences

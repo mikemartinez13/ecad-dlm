@@ -34,7 +34,7 @@ class Dream7bCachingScheduleProblem(ElementwiseProblem):
 
     def __init__(
         self,
-        num_inference_steps: int = 20,      # Dream diffusion denoise steps
+        num_inference_steps: int = 128,      # Dream diffusion denoise steps
         num_layers: int = 32,
         num_component_types: int = 3,       # MVP: ["layer", "kv", "mlp"]
         min_diff_from_default: int = 1,

@@ -111,7 +111,7 @@ def get_base_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-inference-steps",
         type=int,
-        default=20,
+        default=128,
         help="Number of inference steps",
     )
     parser.add_argument(

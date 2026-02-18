@@ -34,7 +34,7 @@ class PopulationIOManager(ABC):
         all_populations_dir: Path = DEFAULT_POPULATIONS_DIR,
         all_benchmarks_dir: Path = DEFAULT_BENCHMARKS_DIR,
         generation_num: int | None = None,
-        num_inference_steps: int = 20,
+        num_inference_steps: int = 128,
         min_diff_from_default: int = 1,
         population_size: int = 72,
         default_schedule: CacheSchedule | None = None,

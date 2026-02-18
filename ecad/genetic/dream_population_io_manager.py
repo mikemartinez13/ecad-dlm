@@ -36,7 +36,7 @@ class DreamPopulationIOManager(PopulationIOManager):
         all_populations_dir: Path = DEFAULT_POPULATIONS_DIR,
         all_benchmarks_dir: Path = DEFAULT_BENCHMARKS_DIR,
         generation_num: int | None = None,
-        num_inference_steps: int = 20,   # diffusion denoise steps for Dream
+        num_inference_steps: int = 128,   # diffusion denoise steps for Dream
         min_diff_from_default: int = 1,
         population_size: int = 72,
         num_blocks: int = 32,            # set to Dream 7B's layer count as used in your implementation

@@ -3,7 +3,7 @@
     "population_dir": "/sciclone/home/mcmartinez/ecad/results/genetic/dream/dream_7b_random_init",
     "benchmark_dir": "/sciclone/home/mcmartinez/ecad/results/benchmark/genetic/dream/dream_7b_random_init",
     "generation_num": 1,
-    "num_inference_steps": 20,
+    "num_inference_steps": 128,
     "min_diff_from_default": 1,
     "population_size": 24,
     "num_blocks": 32,

@@ -51,7 +51,9 @@ class CachedDreamDecoderLayer(DreamDecoderLayer):
         cache_position: Optional[torch.LongTensor],
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[Cache]]:
-        recompute = self.cache_schedule.get_recompute(self.layer_num, "kv")
+        # recompute = self.cache_schedule.get_recompute(self.layer_num, "kv")
+        recompute = True # temporary forcing recompute of attention to avoid cache bugs
+        
         no_cache = self.cached_attn_output is None
 
         if not recompute and no_cache:
@@ -82,7 +84,9 @@ class CachedDreamDecoderLayer(DreamDecoderLayer):
         self,
         norm_hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        recompute = self.cache_schedule.get_recompute(self.layer_num, "mlp")
+        # recompute = self.cache_schedule.get_recompute(self.layer_num, "mlp")
+        recompute = True # temporary forcing recompute of MLP to avoid cache bugs
+        
         no_cache = self.cached_mlp_output is None
 
         if not recompute and no_cache:
@@ -110,9 +114,11 @@ class CachedDreamDecoderLayer(DreamDecoderLayer):
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, ...]:
-        recompute_layer = self.cache_schedule.get_recompute(
-            self.layer_num, "layer"
-        )
+        # recompute_layer = self.cache_schedule.get_recompute(
+        #     self.layer_num, "layer"
+        # )
+        recompute_layer = True # temporary forcing recompute of entire layer to avoid cache bugs    
+        
         no_cache = self.cached_layer_output is None
 
         if not recompute_layer and no_cache:
