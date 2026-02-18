@@ -5,7 +5,7 @@
     "generation_num": 1,
     "num_inference_steps": 20,
     "min_diff_from_default": 1,
-    "population_size": 72,
+    "population_size": 24,
     "num_blocks": 32,
     "num_component_types": 3
 }
