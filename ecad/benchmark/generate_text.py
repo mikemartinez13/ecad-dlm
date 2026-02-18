@@ -44,6 +44,7 @@ def generate_for_schedule(
     regen_not_n_texts: int | None = None,
     dont_include_seed: bool = False,
     max_new_tokens: int | None = None,
+    num_inference_steps: int | None = None,
 ):
     """
     Generate text for a single schedule JSON.
@@ -71,6 +72,15 @@ def generate_for_schedule(
     print(f"\n\n\nGenerating text for schedule: {schedule_file.stem}.\n")
 
     try:
+        text_generator = text_generator_type(  # type: ignore
+            start_seed=seed,
+            seed_step=seed_step,
+            schedule_path=schedule_file,
+            max_new_tokens=max_new_tokens,
+            num_inference_steps=num_inference_steps,
+        )
+    except TypeError:
+        # Backward compatibility for generators that do not accept these args.
         text_generator = text_generator_type(  # type: ignore
             start_seed=seed,
             seed_step=seed_step,
@@ -106,6 +116,7 @@ def generate_all_schedules(
     regen_not_n_texts: int | None = None,
     dont_include_seed: bool = False,
     max_new_tokens: int | None = None,
+    num_inference_steps: int | None = None,
 ):
     """
     Recurse over schedule_dir:
@@ -126,6 +137,7 @@ def generate_all_schedules(
             regen_not_n_texts,
             dont_include_seed,
             max_new_tokens,
+            num_inference_steps,
         )
         return
 
@@ -145,6 +157,7 @@ def generate_all_schedules(
                     regen_not_n_texts,
                     dont_include_seed,
                     max_new_tokens,
+                    num_inference_steps,
                 )
         return
 
@@ -161,6 +174,7 @@ def generate_all_schedules(
             regen_not_n_texts,
             dont_include_seed,
             max_new_tokens,
+            num_inference_steps,
         )
 
 
@@ -243,6 +257,16 @@ def main() -> None:
         required=False,
         help="Override max_new_tokens passed into the generator (if supported).",
     )
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        required=False,
+        help=(
+            "Override num_inference_steps used by the generator when no schedule-defined "
+            "value is available. If only one of this and --max-new-tokens is provided, "
+            "the other defaults to the same value."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -255,6 +279,11 @@ def main() -> None:
     if not args.output_dir.exists():
         print(f"Output directory {args.output_dir} not found. Creating.")
         args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.max_new_tokens is None and args.num_inference_steps is not None:
+        args.max_new_tokens = args.num_inference_steps
+    if args.num_inference_steps is None and args.max_new_tokens is not None:
+        args.num_inference_steps = args.max_new_tokens
 
     text_generator_type = get_text_generator_type(args.image_generator)
     
@@ -272,6 +301,7 @@ def main() -> None:
         args.regen_if_not_n_images,
         args.dont_include_seed,
         args.max_new_tokens,
+        args.num_inference_steps,
     )
 
     print("Done.")

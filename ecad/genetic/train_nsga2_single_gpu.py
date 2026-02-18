@@ -32,6 +32,8 @@ def get_offline_eval_commands_single_gpu_from_manager(
     print_commands: bool = True,
     batch_size: int | None = None,
     embedding_dir: Path | None = None,
+    num_inference_steps: int | None = None,
+    max_new_tokens: int | None = None,
     num_images_per_prompt: int | None = None,
     benchmark_prompts: Path | None = None,
     file_mode: str | None = None,
@@ -68,6 +70,16 @@ def get_offline_eval_commands_single_gpu_from_manager(
     regen_str = (
         f"--regen-if-not-n-images {regen_if_not_n_images} "
         if regen_if_not_n_images is not None
+        else ""
+    )
+    num_inference_steps_str = (
+        f"--num-inference-steps {num_inference_steps} "
+        if num_inference_steps is not None
+        else ""
+    )
+    max_new_tokens_str = (
+        f"--max-new-tokens {max_new_tokens} "
+        if max_new_tokens is not None
         else ""
     )
     
@@ -142,6 +154,8 @@ def get_offline_eval_commands_single_gpu_from_manager(
             f"{num_images_per_prompt_str}"
             f"{batch_size_str}"
             f"{regen_str}"
+            f"{num_inference_steps_str}"
+            f"{max_new_tokens_str}"
         ).strip()
 
         # Build command for scoring texts using score_text.py

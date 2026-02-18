@@ -111,8 +111,17 @@ def get_base_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-inference-steps",
         type=int,
-        default=128,
+        default=None,
         help="Number of inference steps",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=128,
+        help=(
+            "Maximum number of generated tokens for text generators. "
+            "For text runs, --num-inference-steps defaults to this value."
+        ),
     )
     parser.add_argument(
         "--benchmark-prompts",
@@ -196,6 +205,28 @@ def validate_base_args(args: argparse.Namespace) -> None:
         raise ValueError(
             "Must provide benchmark prompts for image pipelines."
         ) 
+
+    is_text_generator = args.image_generator in TextGeneratorRegistry.registry
+    if is_text_generator:
+        if args.num_inference_steps is None:
+            args.num_inference_steps = args.max_new_tokens
+        if args.max_new_tokens is None:
+            args.max_new_tokens = args.num_inference_steps
+    elif args.num_inference_steps is None:
+        image_generator_type = get_image_generator_type(args.image_generator)
+        default_steps = getattr(
+            image_generator_type, "DEFAULT_NUM_INFERENCE_STEPS", None
+        )
+        if default_steps is None:
+            raise ValueError(
+                "Could not infer default --num-inference-steps for this image generator."
+            )
+        args.num_inference_steps = int(default_steps)
+
+    if args.num_inference_steps is not None and args.num_inference_steps <= 0:
+        raise ValueError("--num-inference-steps must be positive.")
+    if args.max_new_tokens is not None and args.max_new_tokens <= 0:
+        raise ValueError("--max-new-tokens must be positive.")
     
 
 def init_gen_0(
@@ -364,6 +395,8 @@ def get_offline_eval_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     """
     return {
         "embedding_dir": args.embedding_dir,
+        "num_inference_steps": args.num_inference_steps,
+        "max_new_tokens": args.max_new_tokens,
         "num_images_per_prompt": args.num_images_per_prompt,
         "exactly_n_images": args.exactly_n_images,
         "regen_if_not_n_images": args.regen_if_not_n_images,

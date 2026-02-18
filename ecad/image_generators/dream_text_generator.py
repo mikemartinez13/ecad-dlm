@@ -60,7 +60,6 @@ class DreamTextGenerator(TextGenerator, ABC):
     DEFAULT_TOKENIZER_NAME = None
 
     DEFAULT_NUM_LAYERS = 32
-    DEFAULT_NUM_INFERENCE_STEPS = 128
 
     # Edited model class with cache-schedule-aware decoder layers.
     DLM_MODEL_CLS: Type[PreTrainedModel] = DreamForCausalLMEdited
@@ -72,11 +71,15 @@ class DreamTextGenerator(TextGenerator, ABC):
         start_seed: int = 0,
         seed_step: int = 1,
         schedule_path: Path | None = None,
+        max_new_tokens: int | None = None,
+        num_inference_steps: int | None = None,
         device: str = "cuda",
     ):
         if not torch.cuda.is_available() and device.startswith("cuda"):
             raise ValueError("CUDA requested but not available.")
 
+        self._requested_max_new_tokens = max_new_tokens
+        self._requested_num_inference_steps = num_inference_steps
         self.weights_name = weights_name or self.DEFAULT_WEIGHTS
         self.tokenizer = load_tokenizer(self.weights_name)
 
@@ -110,10 +113,26 @@ class DreamTextGenerator(TextGenerator, ABC):
         """
         return self.tokenizer
 
+    def _resolve_default_num_inference_steps(self) -> int:
+        if self._requested_num_inference_steps is not None:
+            return int(self._requested_num_inference_steps)
+        if self._requested_max_new_tokens is not None:
+            return int(self._requested_max_new_tokens)
+        raise ValueError(
+            "num_inference_steps is required when no schedule file provides it. "
+            "Pass num_inference_steps (or max_new_tokens) when constructing DreamTextGenerator."
+        )
+
     def _load_subclass_config_defaults(self, config: TextGeneratorConfig) -> None:
         # Keep defaults aligned with your YAML/JSON style config under "dream" or similar.
         # You can add more keys later without changing the GA harness.
-        self.max_new_tokens_default: int = int(config.get("max_new_tokens", 128))
+        if self._requested_max_new_tokens is not None:
+            self.max_new_tokens_default = int(self._requested_max_new_tokens)
+        elif "max_new_tokens" in config:
+            self.max_new_tokens_default = int(config["max_new_tokens"])
+        else:
+            self.max_new_tokens_default = int(self.num_inference_steps)
+
         self.temperature_default: float = float(config.get("temperature", 0.2))
         self.top_p_default: float | None = config.get("top_p", None)
         self.sampling_strategy_default: str = str(config.get("sampling_strategy", "deterministic"))
@@ -122,17 +141,20 @@ class DreamTextGenerator(TextGenerator, ABC):
         self.stop_on_dream_eos_default: bool = bool(config.get("stop_on_dream_eos", True))
 
         self.top_p_default = float(self.top_p_default) if self.top_p_default is not None else None
+
     def _default_dit_schedule(self) -> DreamDiTSchedule:
+        num_inference_steps = self._resolve_default_num_inference_steps()
         return next(
             dit_gen_default(
-                self.DEFAULT_NUM_LAYERS, self.DEFAULT_NUM_INFERENCE_STEPS
+                self.DEFAULT_NUM_LAYERS, num_inference_steps
             )
         )
 
     def _default_cache_schedule(self) -> Dream7bCacheSchedule:
+        num_inference_steps = self._resolve_default_num_inference_steps()
         return next(
             cache_gen_default(
-                self.DEFAULT_NUM_LAYERS, self.DEFAULT_NUM_INFERENCE_STEPS
+                self.DEFAULT_NUM_LAYERS, num_inference_steps
             )
         )
 
@@ -464,9 +486,6 @@ class DreamTextGenerator(TextGenerator, ABC):
                 generator=self.random_generator,
                 generation_tokens_hook_func=per_step_tokens_hook,
             )
-
-            print(out)
-            time.sleep(5)  # brief pause to ensure printed output is readable before decoding
 
             if hasattr(out, "sequences"):
                 seqs = out.sequences

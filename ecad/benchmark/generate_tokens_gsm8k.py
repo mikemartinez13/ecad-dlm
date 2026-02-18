@@ -152,6 +152,18 @@ def main() -> None:
         help="Optional HF model repo id / weights name passed into DreamTextGenerator(weights_name=...).",
     )
     parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=128,
+        help="Dream generation max_new_tokens default used to initialize scheduler metadata.",
+    )
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=None,
+        help="Dream num_inference_steps; defaults to --max-new-tokens when omitted.",
+    )
+    parser.add_argument(
         "--free-after",
         action="store_true",
         help="Call generator.free_encoder_pipeline() after encoding (via encode_and_save_prompts free_after=True).",
@@ -173,6 +185,9 @@ def main() -> None:
     if not args.input_dir.exists():
         raise FileNotFoundError(f"input-dir not found: {args.input_dir}")
 
+    if args.num_inference_steps is None:
+        args.num_inference_steps = args.max_new_tokens
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Instantiate your generator using the registry
@@ -183,6 +198,8 @@ def main() -> None:
         generator: TextGenerator = gen_type(  # type: ignore[call-arg]
             weights_name=args.weights_name,
             schedule_path=None,  # encoding doesn't need schedules
+            max_new_tokens=args.max_new_tokens,
+            num_inference_steps=args.num_inference_steps,
             device=args.device,
         )
     except TypeError:
