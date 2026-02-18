@@ -6,7 +6,7 @@ from typing import Any, Dict, Sequence, Type
 
 import torch
 from torch.utils.data import DataLoader
-from transformers import PreTrainedTokenizerBase, PreTrainedModel, AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import PreTrainedTokenizerBase, PreTrainedModel, AutoConfig, AutoModel, AutoTokenizer
 
 from ecad.image_generators.text_generator import TextGenerator  # your ABC from earlier
 from ecad.schedulers.cache_scheduler.dream_cache_schedule import Dream7bCacheSchedule
@@ -22,22 +22,15 @@ from ecad.schedulers.cache_scheduler.generators.pixart_schedule_generators impor
 from ecad.types import TextGeneratorConfig, DreamPromptEmbedding, PromptEmbeddingType
 
 from ecad.lm_models.dream.modeling_dream import DreamForCausalLM
-from ecad.lm_models.dream_flash.modeling_dream import DreamForCausalLM as DreamFlashForCausalLM
 
 from ecad.lm_models.dream_flash.generation_utils import DreamGenerationConfig
 
-from ecad.lm_models.dream.configuration_dream import ODreamConfig
+from ecad.lm_models.dream.configuration_dream import DreamConfig
 from ecad.lm_models.dream_flash.configuration_dream import ODreamConfig as DreamFlashConfig
 
 
 # register the Dream model
-AutoConfig.register("odream", ODreamConfig)
-AutoModelForCausalLM.register(ODreamConfig, DreamForCausalLM)
-
-# register the Dream Flash model
-AutoConfig.register("odream_flash", DreamFlashConfig)
-AutoModelForCausalLM.register(DreamFlashConfig, DreamFlashForCausalLM)
-
+# AutoConfig.register("odream", ODreamConfig)
 
 
 def load_tokenizer(name: str):
@@ -89,7 +82,7 @@ class DreamTextGenerator(TextGenerator, ABC):
     """
 
     # Override these in concrete subclasses if desired
-    DEFAULT_WEIGHTS = "Dream-org/Dream-Flash-Instruct-7B"
+    DEFAULT_WEIGHTS = "Dream-org/Dream-v0-Instruct-7B"
     DEFAULT_TOKENIZER_NAME = None
 
     # Your edited DLM transformer class, injected by subclasses/constructor
@@ -136,17 +129,25 @@ class DreamTextGenerator(TextGenerator, ABC):
     # Config + default schedules
     # ---------------------------------------------------------------------
 
+    @property
+    def _tokenizer(self) -> PreTrainedTokenizerBase:
+        """
+        The tokenizer used by this text generator.
+        """
+        return self.tokenizer
+
     def _load_subclass_config_defaults(self, config: TextGeneratorConfig) -> None:
         # Keep defaults aligned with your YAML/JSON style config under "dream" or similar.
         # You can add more keys later without changing the GA harness.
         self.max_new_tokens_default: int = int(config.get("max_new_tokens", 128))
         self.temperature_default: float = float(config.get("temperature", 0.2))
-        self.top_p_default: float = float(config.get("top_p", 0.95))
+        self.top_p_default: float | None = config.get("top_p", None)
         self.sampling_strategy_default: str = str(config.get("sampling_strategy", "deterministic"))
         self.early_stop_default: bool = bool(config.get("early_stop", True))
         self.early_stop_consecutive_default: int = int(config.get("early_stop_consecutive", 1))
         self.stop_on_dream_eos_default: bool = bool(config.get("stop_on_dream_eos", True))
 
+        self.top_p_default = float(self.top_p_default) if self.top_p_default is not None else None
     def _default_dit_schedule(self) -> DiTSchedule:
         # Placeholder: replace with your DLM schedule generator when available.
         # The PixArt default uses (num_blocks=28, num_steps=20).
@@ -199,7 +200,7 @@ class DreamTextGenerator(TextGenerator, ABC):
             self.weights_name = self.weights_name.replace("-Flash", "-v0")
             config = DreamFlashConfig().from_pretrained(self.weights_name)
         else:
-            config = ODreamConfig().from_pretrained(self.weights_name)
+            config = DreamConfig().from_pretrained(self.weights_name)
         # Keep kwargs minimal and aligned with the PixArt pattern.
         # model = self.DLM_MODEL_CLS.from_pretrained(
         #     self.weights_name,
@@ -208,14 +209,15 @@ class DreamTextGenerator(TextGenerator, ABC):
         #     cache_schedule=self.cache_schedule,
         # )
 
-        model = AutoModelForCausalLM.from_pretrained(
+        model = DreamForCausalLM.from_pretrained(
             self.weights_name,
-            config=config,
+            config = config, 
             trust_remote_code=True,
             torch_dtype=torch.float16,
-            dit_scheduler=self.dit_scheduler,
-            cache_schedule=self.cache_schedule,
+            # dit_scheduler=self.dit_scheduler,
+            # cache_schedule=self.cache_schedule,
         )
+
         # raise NotImplementedError("Testing model instantiation; remove when ready")
 
         if hasattr(model, "to"):
@@ -472,7 +474,7 @@ class DreamTextGenerator(TextGenerator, ABC):
         if attention_mask is not None:
             attention_mask = attention_mask.to(self.device)
             mask = (attention_mask == 0)  # pad positions
-            # attn_mask = mask.to(dtype=torch.float16) * -1e4  # or -65504 for fp16
+        #     # attn_mask = mask.to(dtype=torch.float16) * -1e4  # or -65504 for fp16
 
         B, L = input_ids.shape
         
@@ -500,30 +502,25 @@ class DreamTextGenerator(TextGenerator, ABC):
             #   - callback called each diffusion step
             #
             # We keep this generic by checking for common method names.
-            
-            # out = model(
-            #         input_ids=input_ids,
-            #         attention_mask=attn_mask,
-            #         position_ids = None,
-            #         #use_cache = cfg.use_cache,
-            #         return_dict = cfg.return_dict_in_generate,
-            #         save_cache = cfg.save_cache, 
-            #         max_length=cfg.max_length,
-            #         use_block_diffusion = cfg.use_block_diffusion,
-            #         block_size = cfg.block_size,
-            #         use_full_query_attn = cfg.use_full_query_attn,
-            #         clean_idx = 0
-            #     )
-            
+
+            print('\nmodel type:', type(model),'\n')
+
+            print(input_ids.shape)
+            print(input_ids[0, :20])
+            print(input_ids[1, :20] if input_ids.shape[0] > 1 else None)
+
+
             out = model.diffusion_generate(
                 inputs=input_ids,
                 attention_mask=attention_mask,
                 generation_config=cfg,
                 generator=self.random_generator,
-                callback=self._call_callbacks,
-                callback_steps=1,
+                # callback=self._call_callbacks,
+                # callback_steps=1,
                 )
 
+            # print('model diffusion generate function finished:', out,'\n')
+            # exit()
             # Model config and generation config NOT the same!
 
             # Normalize outputs to token ids
@@ -541,11 +538,16 @@ class DreamTextGenerator(TextGenerator, ABC):
             decoded = tok.batch_decode(seqs, skip_special_tokens=True)
             for i, s in enumerate(decoded):
                 all_out[i].append(s)
-
+   
             # safety: reset caches/schedules between generations if needed
             transformer = getattr(model, "transformer", None)
             if transformer is not None and hasattr(transformer, "reset_cache"):
                 transformer.reset_cache()
+
+            print('\nFinal decoded output:',all_out,'\n')
+
+            print('Successfully generated text for generation', k+1, 'out of', generations_per_prompt)
+            exit()
 
         return all_out
 

@@ -654,13 +654,13 @@ class DreamGenerationMixin:
                     
                     # feed in x[:, block_start:]
                     # print out input size
-                    print(f"x[:, block_start-1:block_end].shape: {x[:, block_start-1:block_end].shape}")
+                    # print(f"x[:, block_start-1:block_end].shape: {x[:, block_start-1:block_end].shape}")
                     logits = self(
                         # x[:, block_start-1:block_end], 
                         x[:, block_start-1:], 
                         None, 
                         # tok_idx[:, block_start:block_end] if tok_idx is not None else None,
-                        tok_idx[:, block_start:] if tok_idx is not None else None,
+                        tok_idx[:, block_start-1:] if tok_idx is not None else None, # had an error here in the dream code?? not sure what this is. 
                         use_block_diffusion=True,
                         use_full_query_attn=use_full_query_attn,
                         max_length=generation_config.max_length,

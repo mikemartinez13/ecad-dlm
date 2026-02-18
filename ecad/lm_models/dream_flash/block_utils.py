@@ -41,6 +41,9 @@ class BlockCache(torch.nn.Module):
         # # self.key_cache[:, start:end] = new_k
         # print(f"start: {start}, end: {end}")
 
+        # print(f"update position embeddings: new_cos_pos_emb.shape: {new_cos_pos_emb.shape}")
+        # print(f"update position embeddings: new_sin_pos_emb.shape: {new_sin_pos_emb.shape}")
+
         # Move inputs to correct device and dtype if needed
         new_k = new_k.to(device=self.device, dtype=self.dtype)
         new_v = new_v.to(device=self.device, dtype=self.dtype)

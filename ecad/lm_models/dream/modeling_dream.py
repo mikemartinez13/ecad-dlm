@@ -545,6 +545,8 @@ class DreamPreTrainedModel(PreTrainedModel):
         weights_only: bool = True,
         **kwargs,
     ):
+        kwargs.pop("weights_only", None)  # remove weights_only 
+
         _model = super().from_pretrained(
             pretrained_model_name_or_path,
             *model_args,
@@ -556,7 +558,7 @@ class DreamPreTrainedModel(PreTrainedModel):
             token=token,
             revision=revision,
             use_safetensors=use_safetensors,
-            weights_only=weights_only,
+            # weights_only=weights_only,
             **kwargs,
         )
         # NOTE(Lin): we need to override the generation config

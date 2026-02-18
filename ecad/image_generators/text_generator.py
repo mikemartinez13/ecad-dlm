@@ -27,6 +27,8 @@ from ecad.types import (
     PromptEmbeddingType,   # e.g. dict[str, torch.Tensor] batch format
 )
 
+from transformers import PreTrainedTokenizerBase
+
 PE = TypeVar("PE", bound=PromptEmbedding)
 
 class TextGenerator(ABC, Generic[PE]):
@@ -80,7 +82,7 @@ class TextGenerator(ABC, Generic[PE]):
 
     @property
     @abstractmethod
-    def tokenizer(self) -> PreTrainedTokenizerBase:
+    def _tokenizer(self) -> PreTrainedTokenizerBase:
         """
         The tokenizer used by this text generator.
         """
@@ -260,14 +262,16 @@ class TextGenerator(ABC, Generic[PE]):
         )
     
 
-    def load_and_batch_tokenized_prompts(self) -> DataLoader:
-        ds = GSM8KTokenizedPtDataset(root_dir=Path("/path/to/tokenized"), split="train")
+    def load_and_batch_tokenized_prompts(
+            self, input_dir: Path, batch_size: int, shuffle: bool = False
+        ) -> DataLoader:
+        ds = GSM8KTokenizedPtDataset(root_dir=input_dir, split="train")
         dl = DataLoader(
             ds,
-            batch_size=32,
-            shuffle=True,
+            batch_size=batch_size,
+            shuffle=shuffle,
             num_workers=2,
-            collate_fn=lambda b: pad_tokenized_batch(b, pad_token_id=self.tokenizer.pad_token_id),
+            collate_fn=lambda b: pad_tokenized_batch(b, pad_token_id=self._tokenizer.pad_token_id),
         )
         return dl 
         
