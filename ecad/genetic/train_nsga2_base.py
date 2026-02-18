@@ -26,7 +26,7 @@ from ecad.genetic.dream_population_io_manager import (
 )
 
 from ecad.genetic.pixart_problem import PixArtCachingScheduleProblem
-from ecad.genetic.sampling import BinaryRandomSampling
+from ecad.genetic.sampling import BinaryHybridSampling
 from ecad.genetic.population_io_manager import (
     PopulationIOManager,
     DEFAULT_POPULATIONS_DIR,
@@ -244,7 +244,7 @@ def init_gen_0(
     if X.size == 0:
         if (
             input(
-                "No initial population found. Randomly seed the population? (y/N) "
+                "No initial population found. Seed a hybrid initial population (baseline + near-baseline + random)? (y/N) "
             )
             == "y"
         ):
@@ -283,7 +283,13 @@ def init_gen_0(
         raise ValueError("Unsupported image generator type.")
 
     if sample:
-        sampling_or_pop = BinaryRandomSampling()
+        sampling_or_pop = BinaryHybridSampling(
+            default_vector=problem.default_schedule,
+            near_baseline_fraction=0.75,
+            sparse_flip_fraction=0.002,
+            min_sparse_flips=1,
+            include_default=True,
+        )
     else:
         sampling_or_pop = Population.new("X", X)
 
