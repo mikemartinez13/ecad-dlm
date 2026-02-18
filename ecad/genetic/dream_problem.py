@@ -2,21 +2,9 @@ import numpy as np
 from pymoo.core.problem import ElementwiseProblem
 
 from ecad.schedulers.cache_scheduler.dream_cache_schedule import Dream7bCacheSchedule
-
-def make_default_recompute_all(num_layers: int, num_inference_steps: int) -> Dream7bCacheSchedule:
-    schedule = {}
-    for step in range(num_inference_steps):
-        schedule[step] = {
-            str(layer): {"layer": True, "kv": True, "mlp": True}
-            for layer in range(num_layers)
-        }
-    return Dream7bCacheSchedule(
-        num_blocks=num_layers,
-        num_inference_steps=num_inference_steps,
-        name="default_recompute_all",
-        schedule=schedule,
-        attributes={},
-    )
+from ecad.schedulers.cache_scheduler.generators.dream_schedule_generators import (
+    gen_default as cache_gen_default,
+)
 
 
 class Dream7bCachingScheduleProblem(ElementwiseProblem):
@@ -47,7 +35,7 @@ class Dream7bCachingScheduleProblem(ElementwiseProblem):
     def __init__(
         self,
         num_inference_steps: int = 20,      # Dream diffusion denoise steps
-        num_layers: int = 32,               # Dream 7B transformer layers (set to your model)
+        num_layers: int = 32,
         num_component_types: int = 3,       # MVP: ["layer", "kv", "mlp"]
         min_diff_from_default: int = 1,
         default_schedule: Dream7bCacheSchedule | None = None,
@@ -58,10 +46,11 @@ class Dream7bCachingScheduleProblem(ElementwiseProblem):
         self.num_component_types: int = num_component_types
         self.min_diff_from_default: int = min_diff_from_default
 
-        # If no default schedule is provided, construct one via generator.
-        # Default policy could be "cache nothing" or your current baseline.
+        # If no default schedule is provided, construct one from default generator.
         if default_schedule is None:
-            default_schedule = make_default_recompute_all(num_layers, num_inference_steps)
+            default_schedule = next(
+                cache_gen_default(num_layers, num_inference_steps)
+            )
 
         # Flattened bool vector representation of the default schedule
         self.default_schedule = default_schedule.to_numpy(flatten=True)

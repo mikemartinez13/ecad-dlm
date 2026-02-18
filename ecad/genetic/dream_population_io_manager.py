@@ -7,6 +7,9 @@ import numpy.typing as npt
 
 from ecad.genetic.population_io_manager import PopulationIOManager
 from ecad.schedulers.cache_scheduler.dream_cache_schedule import Dream7bCacheSchedule
+from ecad.schedulers.cache_scheduler.generators.dream_schedule_generators import (
+    gen_default as cache_gen_default,
+)
 from ecad.types import CacheScheduleDict
 
 # NOTE: Update these defaults if you want Dream-specific output roots.
@@ -14,53 +17,17 @@ DEFAULT_POPULATIONS_DIR = Path(__file__).parents[2] / Path("results/genetic/popu
 DEFAULT_BENCHMARKS_DIR = Path(__file__).parents[2] / Path("results/benchmark/genetic/populations/")
 
 
-# ----------------------------
-# Dream MVP cache schedule types
-# ----------------------------
-# MVP schema (maps PixArt's {attn1, attn2, ff} -> Dream {layer, mlp, kv}).
-# - "layer": coarse toggle for caching the layer-level hidden/state (acts like a broad "reuse layer output" gate)
-# - "mlp": whether to cache MLP block outputs
-# - "kv":  whether to cache attention KV (future extension; for MVP you can ignore at runtime if not supported)
-#
-# You can add more keys later ("attn_qkv", "attn_out", "cross_attn", etc.) without changing the IO pattern.
 DreamCacheScheduleDict = dict[int, dict[str, dict[str, bool]]]
-
-
-def dream_gen_default(num_blocks: int, num_inference_steps: int) -> Dream7bCacheSchedule:
-    """
-    Default schedule generator (MVP):
-      - Cache nothing everywhere (all False).
-    You can change this to match your real default policy.
-    """
-    schedule: DreamCacheScheduleDict = {}
-    for step in range(num_inference_steps):
-        schedule[step] = {
-            str(layer_idx): {"layer": False, "mlp": False, "kv": False}
-            for layer_idx in range(num_blocks)
-        }
-
-    return Dream7bCacheSchedule(
-        num_blocks=num_blocks,
-        num_inference_steps=num_inference_steps,
-        name="dream_default",
-        schedule=schedule,
-        top_level_config={},
-        attributes={},
-        metrics={},
-    )
 
 
 class DreamPopulationIOManager(PopulationIOManager):
     """
     Dream 7B adaptation of PixArtPopulationIOManager.
 
-    Key differences vs PixArt:
-      - "blocks" -> "layers"
-      - component keys map:
-          PixArt attn1 -> Dream layer (coarse layer-level caching)
-          PixArt attn2 -> Dream kv    (future extension; can be ignored for MVP)
-          PixArt ff    -> Dream mlp
-      - schedule dict keys are (diff_step -> layer_idx -> toggles)
+    Schedule components:
+      - "layer": coarse whole-layer recompute toggle
+      - "kv": attention/kv-side recompute toggle
+      - "mlp": mlp-side recompute toggle
     """
 
     def __init__(
@@ -73,10 +40,12 @@ class DreamPopulationIOManager(PopulationIOManager):
         min_diff_from_default: int = 1,
         population_size: int = 72,
         num_blocks: int = 32,            # set to Dream 7B's layer count as used in your implementation
-        num_component_types: int = 3,     # [layer, mlp, kv] (MVP keeps kv, even if runtime ignores)
+        num_component_types: int = 3,
         maximize_macs: bool = False,
     ) -> None:
-        default_schedule = dream_gen_default(num_blocks, num_inference_steps)
+        default_schedule = next(
+            cache_gen_default(num_blocks, num_inference_steps)
+        )
 
         super().__init__(
             name=name,
@@ -226,18 +195,13 @@ class DreamPopulationIOManager(PopulationIOManager):
         **kwargs: Any,
     ) -> CacheScheduleDict:
         """
-        MVP mapping from PixArt schema -> Dream schema.
-
         Expected x length:
           num_inference_steps * num_layers * num_component_types
 
-        Component ordering for Dream MVP:
-          0 -> "layer"  (coarse layer caching)   [PixArt attn1]
-          1 -> "kv"     (attention KV caching)   [PixArt attn2]  (can be ignored in runtime for MVP)
-          2 -> "mlp"    (MLP caching)            [PixArt ff]
-
-        NOTE: PixArt used keys {"attn1","attn2","ff"}.
-              This keeps the same "3-component" chromosome shape for MVP.
+        Component ordering:
+          0 -> "layer"
+          1 -> "kv"
+          2 -> "mlp"
         """
         if "num_layers" not in kwargs or "num_component_types" not in kwargs:
             raise ValueError("binary_vector_to_schedule_dict requires num_layers and num_component_types")

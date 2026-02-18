@@ -110,7 +110,8 @@ class GSM8KTokenizedPtDataset(Dataset):
     ) -> None:
         self.root_dir = Path(root_dir)
         self.split = split
-        self.split_dir = self.root_dir / split
+        split_dir = self.root_dir / split
+        self.split_dir = split_dir if split_dir.exists() else self.root_dir
         self.pattern = pattern
         self.strict = strict
 
@@ -160,6 +161,9 @@ class GSM8KTokenizedPtDataset(Dataset):
             "name": name,
             "split": self.split,
             "path": str(fpath),
+            "relative_path": str(
+                fpath.parent.relative_to(self.root_dir)
+            ),
             "input_ids": input_ids,                 # [L]
             "attention_mask": attention_mask,       # [L] or None
         }
@@ -186,6 +190,7 @@ def pad_tokenized_batch(
     """
     names = [b["name"] for b in batch]
     paths = [b["path"] for b in batch]
+    relative_paths = [b["relative_path"] for b in batch]
 
     seqs: List[torch.Tensor] = [b["input_ids"] for b in batch]
     masks: List[Optional[torch.Tensor]] = [b.get("attention_mask", None) for b in batch]
@@ -216,6 +221,7 @@ def pad_tokenized_batch(
     return {
         "name": names,
         "path": paths,
+        "relative_path": relative_paths,
         "input_ids": input_ids,               # [B, Lmax]
         "attention_mask": attention_mask,     # [B, Lmax]
     }
