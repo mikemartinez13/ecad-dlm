@@ -4,7 +4,7 @@ certifi==2024.8.30
 charset-normalizer==3.3.2
 clean-fid==0.1.35
 clip @ https://github.com/openai/CLIP/archive/refs/heads/main.zip#egg=clip-1.0
-clip-score==0.2.1
+clip-score @ git+https://github.com/AniAggarwal/clip-score.git
 diffusers==0.30.3
 filelock==3.13.1
 fsspec==2024.2.0
