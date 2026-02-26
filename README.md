@@ -2,7 +2,7 @@
   <img src="assets/images/teaser.png" width=90%>
 </p>
 
-# Evolutionary Caching to Accelerate Your Off-the-Shelf Diffusion Model
+# [ICLR 2026] Evolutionary Caching to Accelerate Your Off-the-Shelf Diffusion Model
 
 This repository contains the official implementation of ECAD (Evolutionary Caching for Accelerated Diffusion), a method that uses evolutionary algorithms to optimize caching schedules for diffusion models. ECAD automatically discovers optimal layer-wise caching patterns that accelerate inference while maintaining image quality. Our approach works with off-the-shelf diffusion models including PixArt-α, PixArt-Σ, and FLUX, achieving significant speedups without requiring model retraining or architectural modifications.
 
@@ -144,12 +144,10 @@ For issues, questions, or contributions:
 
 ## BibTeX
 
-    @misc{aggarwal2025evolutionarycachingaccelerateofftheshelf,
-      title={Evolutionary Caching to Accelerate Your Off-the-Shelf Diffusion Model}, 
-      author={Anirud Aggarwal and Abhinav Shrivastava and Matthew Gwilliam},
-      year={2025},
-      eprint={2506.15682},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2506.15682}, 
+    @inproceedings{aggarwal2026evolutionary,
+      title={{Evolutionary Caching to Accelerate Your Off-the-Shelf Diffusion Model}},
+      author={Aggarwal, Anirud and Shrivastava, Abhinav and Gwilliam, Matthew},
+      booktitle={ICLR},
+      year={2026}
+      url={https://arxiv.org/abs/2506.15682}
     }
