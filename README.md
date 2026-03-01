@@ -8,7 +8,7 @@ This repository contains the official implementation of ECAD (Evolutionary Cachi
 
 
 <div align="center">
-<a href="https://aniaggarwal.github.io/ecad/"><img src="https://img.shields.io/static/v1?label=Project%20Page&message=Website&color=blue&logo=github-pages"></a> &ensp;
+<a href="https://research.aniaggarwal.com/ecad"><img src="https://img.shields.io/static/v1?label=Project%20Page&message=Website&color=blue&logo=github-pages"></a> &ensp;
 <a href="https://arxiv.org/abs/2506.15682"><img src="https://img.shields.io/static/v1?label=Paper&message=Arxiv:ECAD&color=red&logo=arxiv"></a> &ensp;
 </div>
 
