@@ -1,0 +1,122 @@
+# Historical run identifier retained for existing results and checkpoint resume.
+run:
+  name: diffucoder7b_code_active_kv_pilot_v2_native_dense
+  resume: true
+
+model:
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.4
+  top_p: 0.95
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+  seed: 0
+
+evaluation:
+  # Reuse the immutable 64-task code dataset, not a live/downloaded task set.
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/data/code/humaneval_mbpp_64_strict_python_seed0.jsonl
+  max_prompts: 64
+  prompt_batch_size: 1
+  evalplus_image: /scratch/gqs7zr/apptainer/evalplus.sif
+  evalplus_humaneval_path: /scratch/gqs7zr/evalplus_data/HumanEvalPlus.jsonl
+  evalplus_mbpp_path: /scratch/gqs7zr/evalplus_data/MbppPlus.jsonl
+  evalplus_parallel: 8
+  evalplus_apptainer_bin: apptainer
+  evalplus_timeout_seconds: 1800
+  baseline_warmup_runs: 1
+  timing_repeats: 3
+
+fixed_policy_evaluation:
+  # The first six form the core screen. The remaining entries exercise every
+  # planned genome coordinate before evolutionary search begins.
+  policies:
+    - dense
+    - dkv_style
+    - age_immediate
+    - age_long
+    - depth_middle
+    - depth_deep
+    - refresh_short
+    - prompt_refresh
+    - local_radius_4
+    - terminal_refresh
+  run_evalplus: true
+
+policies:
+  dense:
+    force_dense: true
+
+  # Delayed decoded-token reuse, periodic refresh, and prompt refresh: the
+  # fixed literature-style control that the later GA must improve upon.
+  dkv_style:
+    additional_decoded_forwards: 1
+    max_cache_age: 16
+    prompt_refresh_interval: 16
+    local_refresh_radius: 0
+    terminal_full_refresh_steps: 0
+    refresh_depth: 1
+
+  age_immediate:
+    additional_decoded_forwards: 0
+    max_cache_age: 16
+    prompt_refresh_interval: 16
+    refresh_depth: 1
+
+  age_long:
+    additional_decoded_forwards: 2
+    max_cache_age: 16
+    prompt_refresh_interval: 16
+    refresh_depth: 1
+
+  # Only refresh depth changes relative to dkv_style. Masks/newly decoded
+  # tokens always start at layer one.
+  depth_middle:
+    additional_decoded_forwards: 1
+    max_cache_age: 16
+    prompt_refresh_interval: 16
+    refresh_depth:
+      default:
+        prompt: 1
+        stable_decoded: 15
+
+  depth_deep:
+    additional_decoded_forwards: 1
+    max_cache_age: 16
+    prompt_refresh_interval: 16
+    refresh_depth:
+      default:
+        prompt: 1
+        stable_decoded: 22
+
+  refresh_short:
+    additional_decoded_forwards: 1
+    max_cache_age: 4
+    prompt_refresh_interval: 16
+    refresh_depth: 1
+
+  prompt_refresh:
+    additional_decoded_forwards: 1
+    max_cache_age: 16
+    prompt_refresh_interval: 4
+    refresh_depth: 1
+
+  local_radius_4:
+    additional_decoded_forwards: 1
+    max_cache_age: 16
+    prompt_refresh_interval: 16
+    local_refresh_radius: 4
+    refresh_depth: 1
+
+  terminal_refresh:
+    additional_decoded_forwards: 1
+    max_cache_age: 16
+    prompt_refresh_interval: 16
+    terminal_full_refresh_steps: 16
+    refresh_depth: 1

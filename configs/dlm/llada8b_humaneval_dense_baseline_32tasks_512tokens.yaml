@@ -1,0 +1,55 @@
+# Historical run identifier retained for existing results and checkpoint resume.
+run:
+  name: llada8b_humaneval_official
+  resume: true
+
+model:
+  family: llada
+  path: /scratch/gqs7zr/model_checkpoints/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+# Official LLaDA-style HumanEval control: pure diffusion over the full
+# response canvas, with 512 denoising steps.
+generation:
+  steps: 512
+  gen_length: 512
+  block_length: 512
+  temperature: 0.0
+  cfg_scale: 0.0
+  remasking: low_confidence
+  mask_id: 126336
+  eos_token_id: 126081
+  eot_token_id: 126348
+  logits_eos_inf: true
+  confidence_eos_eot_inf: false
+
+schedule:
+  step_group_size: 2
+  layer_group_size: 4
+  attention_weight: null
+  mlp_weight: null
+  fixed_step_weight: null
+
+evaluation:
+  source: evalplus
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/data/code/humaneval_32_opencompass_seed0.jsonl
+  code_datasets: [humaneval]
+  code_seed: 0
+  code_prompt_style: opencompass
+  max_prompts: 32
+  batch_size: 1
+  baseline_warmup_runs: 1
+  save_decoded_text: true
+
+# The Slurm runner passes --max-generations 0 by default for this control.
+evolution:
+  population_size: 2
+  generations: 1
+  seed: 0
+  crossover_probability: 0.9
+  crossover_points: 4
+  mutation_probability: 0.05
+  initial_recompute_probability: 0.9
+  min_cached_groups: 1

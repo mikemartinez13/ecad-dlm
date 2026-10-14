@@ -19,6 +19,15 @@ results/benchmark/**
 
 results/embeddings/*
 results/job-outputs/
+results/dlm_ecad/
+results/dlm_cache_validation/
+results/dlm_inference/
+results/dlm_kv_policy/
+results/diffucoder_cache_validation/
+
+# Local experiment artifacts and Slurm output
+/scratch
+/slurm-*.out
 
 # Pycharm
 .idea/

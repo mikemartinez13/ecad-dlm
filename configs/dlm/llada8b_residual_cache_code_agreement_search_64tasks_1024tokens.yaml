@@ -1,0 +1,57 @@
+# Historical run identifier retained for existing results and checkpoint resume.
+run:
+  name: llada8b_code_evalplus_64_len1024
+  resume: true
+
+model:
+  family: llada
+  path: /scratch/gqs7zr/model_checkpoints/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+# Thirty-two 32-token semi-autoregressive blocks and 16 local denoising steps
+# per block. The 1024-token output budget avoids truncating complete Python
+# solutions while using the shorter block size common in LLaDA sampling.
+generation:
+  steps: 512
+  gen_length: 1024
+  block_length: 32
+  temperature: 0.0
+  cfg_scale: 0.0
+  remasking: low_confidence
+  mask_id: 126336
+  eos_token_id: 126081
+  eot_token_id: 126348
+  logits_eos_inf: false
+  confidence_eos_eot_inf: false
+
+schedule:
+  step_group_size: 2
+  layer_group_size: 4
+  attention_weight: null
+  mlp_weight: null
+  fixed_step_weight: null
+
+evaluation:
+  source: evalplus
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/data/code/humaneval_mbpp_64_strict_python_seed0.jsonl
+  code_datasets: [humaneval, mbpp]
+  code_seed: 0
+  code_prompt_style: strict_python
+  max_prompts: 64
+  batch_size: 1
+  baseline_warmup_runs: 1
+  save_decoded_text: true
+
+# Search token agreement with the uncached baseline and estimated compute.
+# Score generated programs separately with the EvalPlus scoring launcher.
+evolution:
+  population_size: 8
+  generations: 5
+  seed: 0
+  crossover_probability: 0.9
+  crossover_points: 4
+  mutation_probability: 0.05
+  initial_recompute_probability: 0.9
+  min_cached_groups: 1

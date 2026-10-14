@@ -1,0 +1,2 @@
+# The official dKV-Cache README requires this exact Transformers release.
+transformers==4.46.3

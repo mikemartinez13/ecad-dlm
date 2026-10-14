@@ -1,0 +1,9 @@
+{
+  "checkpoint_path": "/scratch/gqs7zr/model_checkpoints/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "official_repository": "https://github.com/horseee/dKV-Cache.git",
+  "official_source_directory": "dkv_cache_official",
+  "official_repository_commit": "49a76fcc43b744ec2d960137f216e419317138b1",
+  "official_repository_commit_date": "2025-05-22",
+  "source_policy": "The copied author repository lives at the ECAD repository root and is read-only for this reproduction. All launcher and instrumentation code lives in dkv_repro/.",
+  "transformers_requirement": "4.46.3"
+}

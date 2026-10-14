@@ -76,6 +76,13 @@ class FluxFullComponentScheduleDict(ComponentScheduleDict):
     full_ff_context: bool
 
 
+class DLMComponentScheduleDict(ComponentScheduleDict):
+    """Recomputation decisions for one diffusion-language-model layer."""
+
+    attention: bool
+    mlp: bool
+
+
 FluxComponentScheduleDict = (
     FluxSingleComponentScheduleDict | FluxFullComponentScheduleDict
 )
@@ -88,8 +95,10 @@ ComponentScheduleDictT = TypeVar(
 BlockScheduleDict = dict[str, ComponentScheduleDictT]
 PixArtBlockScheduleDict = BlockScheduleDict[PixArtComponentScheduleDict]
 FluxBlockScheduleDict = BlockScheduleDict[FluxComponentScheduleDict]
+DLMBlockScheduleDict = BlockScheduleDict[DLMComponentScheduleDict]
 
 # maps inference steps (ints) to dict mapping block name to component schedules
 CacheScheduleDict = dict[int, BlockScheduleDict]
 PixArtCacheScheduleDict = dict[int, PixArtBlockScheduleDict]
 FluxCacheScheduleDict = dict[int, FluxBlockScheduleDict]
+DLMCacheScheduleDict = dict[int, DLMBlockScheduleDict]

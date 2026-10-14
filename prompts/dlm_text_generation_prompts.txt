@@ -1,0 +1,8 @@
+Explain why the sky appears blue during the day in two concise paragraphs.
+Solve step by step: A train travels 180 miles in 3 hours. At the same speed, how far does it travel in 7 hours?
+Write a Python function that returns the first n Fibonacci numbers and explain its time complexity.
+Summarize the central conflict in Shakespeare's Hamlet without quoting the play.
+If all roses are flowers and some flowers fade quickly, what can and cannot be concluded about roses?
+Give three practical ways to reduce household electricity use, ordered by likely impact.
+Translate into French: The research team will publish its results tomorrow.
+Describe the difference between precision and recall with a small classification example.

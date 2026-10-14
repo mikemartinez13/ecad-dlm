@@ -1,0 +1,49 @@
+# Historical run identifier retained for existing results and checkpoint resume.
+run:
+  name: diffucoder7b_ecad_pilot
+  resume: true
+
+model:
+  family: diffucoder
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+# DiffuCoder denoises one complete canvas. Its schedule therefore has 32 global
+# denoising steps rather than a local schedule repeated across output blocks.
+generation:
+  steps: 32
+  gen_length: 32
+  temperature: 0.0
+  top_p: 0.95
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+
+# 31 cacheable steps -> 8 groups; 28 layers -> 7 groups; two residual branches.
+# This is a 112-bit residual-cache search genome.
+schedule:
+  step_group_size: 4
+  layer_group_size: 4
+  attention_weight: null
+  mlp_weight: null
+  fixed_step_weight: null
+
+evaluation:
+  source: text
+  prompts_file: /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/prompts/dlm_text_generation_prompts.txt
+  max_prompts: 8
+  batch_size: 1
+  baseline_warmup_runs: 1
+  save_decoded_text: true
+
+evolution:
+  population_size: 16
+  generations: 10
+  seed: 0
+  crossover_probability: 0.9
+  crossover_points: 4
+  mutation_probability: 0.05
+  initial_recompute_probability: 0.8
+  min_cached_groups: 1

@@ -1,0 +1,53 @@
+# Historical run identifier retained for existing results and checkpoint resume.
+run:
+  name: diffucoder7b_code_evalplus_64_len256
+  resume: true
+
+model:
+  family: diffucoder
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+# Settings used by the DiffuCoder checkpoint's native Dream sampler examples.
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.4
+  top_p: 0.95
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+
+schedule:
+  step_group_size: 8
+  layer_group_size: 4
+  attention_weight: null
+  mlp_weight: null
+  fixed_step_weight: null
+
+evaluation:
+  source: evalplus
+  # Reuse the fixed, model-independent 64-task dataset for paired comparison
+  # with LLaDA. The dataset filename describes tasks and prompt formatting.
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/data/code/humaneval_mbpp_64_strict_python_seed0.jsonl
+  code_datasets: [humaneval, mbpp]
+  code_seed: 0
+  code_prompt_style: strict_python
+  max_prompts: 64
+  batch_size: 1
+  baseline_warmup_runs: 1
+  save_decoded_text: true
+
+# The search objective remains agreement with the uncached model plus estimated
+# compute. Run EvalPlus post hoc on the baseline and selected Pareto candidates.
+evolution:
+  population_size: 8
+  generations: 5
+  seed: 0
+  crossover_probability: 0.9
+  crossover_points: 4
+  mutation_probability: 0.05
+  initial_recompute_probability: 0.9
+  min_cached_groups: 1
