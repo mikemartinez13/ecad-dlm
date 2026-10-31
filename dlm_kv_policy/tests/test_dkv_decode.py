@@ -51,7 +51,21 @@ class DkvDecodePolicyTests(unittest.TestCase):
         )
         self.assertEqual(immediate_decision.active.tolist(), [[False, True, False, False]])
         self.assertEqual(long_decision.active.tolist(), [[False, True, True, True]])
-        self.assertEqual(long_decision.refresh_depth.tolist(), [[15, 1, 1, 15]])
+        # The age-2 row is still inside the delay window, so it is fully recomputed.
+        self.assertEqual(long_decision.refresh_depth.tolist(), [[15, 1, 1, 1]])
+
+    def test_delay_changes_depth_even_with_a_depth_boundary(self) -> None:
+        states = torch.tensor([[DenoisingTokenCategory.STABLE_DECODED]])
+        ages = torch.tensor([[2]])
+        depths = []
+        for delay in (1, 2):
+            policy = DKVDecodeRefreshPolicy(additional_decoded_forwards=delay, refresh_depth=22)
+            decision = policy.decide(
+                states=states, decoded_age=ages, token_cache_age=ages, cache_ready=True,
+                step=2, total_steps=256, num_layers=28,
+            )
+            depths.append(decision.refresh_depth.item())
+        self.assertEqual(depths, [22, 1])
 
     def test_depth_boundary_recomputes_stable_rows(self) -> None:
         states = torch.tensor(
@@ -70,11 +84,6 @@ class DkvDecodePolicyTests(unittest.TestCase):
         self.assertEqual(decision.active.tolist(), [[False, True, True, True]])
         self.assertEqual(decision.refresh_depth.tolist(), [[15, 15, 1, 1]])
         self.assertEqual(decision.reasons["depth_stable"], 1)
-
-    def test_policy_record_marks_the_depth_boundary_implementation(self) -> None:
-        self.assertEqual(
-            DKVDecodeRefreshPolicy().to_dict()["implementation_revision"], "depth_boundary_v2"
-        )
 
 
 if __name__ == "__main__":

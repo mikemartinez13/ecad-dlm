@@ -24,6 +24,7 @@ from ecad.language_models.diffucoder_loader import (
     prepare_diffucoder_prompt_batch,
 )
 
+from .compute_cost import ModelShape, dense_forward_flops
 from .diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from .kv_policy_experiment_config import KVPolicyExperimentConfig
 from .dense_diffucoder_baseline import DenseDiffuCoderBaseline
@@ -53,6 +54,34 @@ def _write_json(path: Path, value: Any) -> None:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def gpu_folder_name() -> str:
+    """Folder name for this GPU type, e.g. ``NVIDIA_A100-SXM4-80GB``.
+
+    Different GPU types round bf16 differently, which changes sampled outputs,
+    so results from different GPU types must never be mixed in one folder.
+    """
+
+    name = torch.cuda.get_device_name()
+    return "".join(character if character.isalnum() or character in "-_" else "_" for character in name)
+
+
+def output_hash(generated_token_ids: list[list[int]]) -> str:
+    """Short hash of every generated token; equal hashes mean identical outputs."""
+
+    return hashlib.sha256(json.dumps(generated_token_ids).encode()).hexdigest()[:16]
+
+
+# Keys copied from an already scored policy whose output is byte-identical.
+CODE_SCORE_KEYS = (
+    "quality_loss",
+    "correctness",
+    "candidate_base_pass_at_1",
+    "syntax_invalid_count",
+    "syntax_invalid_task_ids",
+    "code_execution",
+)
 
 
 def _merge_diagnostics(items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -171,6 +200,7 @@ class DiffuCoderKVPolicyEvaluator:
         histories: list[list[torch.Tensor]] = []
         diagnostics: list[dict[str, Any]] = []
         elapsed = 0.0
+        dense_flops = 0
         for index, task in enumerate(tasks):
             seed_everything(self.config.generation.seed + index)
             prompt, attention_mask = prepare_diffucoder_prompt_batch(
@@ -195,6 +225,10 @@ class DiffuCoderKVPolicyEvaluator:
             histories.append(result.history)
             diagnostics.append(result.diagnostics)
             elapsed += result.elapsed_seconds
+            sequence_length = prompt.shape[1] + self.config.generation.gen_length
+            dense_flops += self.config.generation.steps * dense_forward_flops(
+                ModelShape.from_model(self.model), sequence_length
+            )
         task_outputs = [
             make_code_task_output(task, response) for task, response in zip(tasks, responses)
         ]
@@ -203,9 +237,13 @@ class DiffuCoderKVPolicyEvaluator:
                 "signature": self.signature,
                 "policy": {"name": policy.name, **policy.to_dict()},
                 "generated_token_ids": token_ids,
+                "output_hash": output_hash(token_ids),
                 "responses": responses,
                 "task_outputs": task_outputs,
                 "elapsed_seconds": elapsed,
+                "flops": backend.flops,
+                "dense_flops": dense_flops,
+                "compute_fraction": backend.flops / dense_flops,
                 "diagnostics": _merge_diagnostics(diagnostics),
             },
             histories=histories,
@@ -317,25 +355,58 @@ class DiffuCoderKVPolicyEvaluator:
         else:
             result["trajectory_diagnostics"] = {"available": False, "reason": "baseline was resumed"}
         if baseline_execution is not None:
-            execution = self._evalplus(
-                result["task_outputs"], self.config.run.run_dir / "code_execution" / policy.name
-            )
-            correctness = compare_base_correctness(baseline_execution, execution)
-            invalid = [
-                item["task_id"] for item in result["task_outputs"] if not item.get("syntax_valid", True)
-            ]
-            result.update(
-                {
-                    "quality_loss": correctness["base_regression_rate"],
-                    "correctness": correctness,
-                    "candidate_base_pass_at_1": execution["aggregate"]["base_pass_at_1"],
-                    "syntax_invalid_count": len(invalid),
-                    "syntax_invalid_task_ids": invalid,
-                    "code_execution": execution,
-                }
-            )
+            self._score_code(result, policy.name, baseline_execution)
         _write_json(path, result)
         return result
+
+    def _find_scored_policy_with_output(self, wanted_hash: str) -> dict[str, Any] | None:
+        """Return an already scored policy record in this run with identical output."""
+
+        for path in sorted((self.config.run.run_dir / "policies").glob("*.json")):
+            if path.name.endswith(".plus_eval.json"):
+                continue
+            saved = _read_json(path)
+            if (
+                saved.get("signature") == self.signature
+                and saved.get("output_hash") == wanted_hash
+                and "code_execution" in saved
+            ):
+                return saved
+        return None
+
+    def _score_code(
+        self, result: dict[str, Any], policy_name: str, baseline_execution: dict[str, Any]
+    ) -> None:
+        """Add paired EvalPlus base scores to ``result``.
+
+        If another policy in this run already produced byte-identical tokens,
+        its scores are copied instead of running EvalPlus again.
+        """
+
+        duplicate = self._find_scored_policy_with_output(result["output_hash"])
+        if duplicate is not None:
+            print(f"{policy_name}: same output as {duplicate['policy']['name']}; reusing its scores", flush=True)
+            result["same_output_as"] = duplicate["policy"]["name"]
+            for key in CODE_SCORE_KEYS:
+                result[key] = duplicate[key]
+            return
+        execution = self._evalplus(
+            result["task_outputs"], self.config.run.run_dir / "code_execution" / policy_name
+        )
+        correctness = compare_base_correctness(baseline_execution, execution)
+        invalid = [
+            item["task_id"] for item in result["task_outputs"] if not item.get("syntax_valid", True)
+        ]
+        result.update(
+            {
+                "quality_loss": correctness["base_regression_rate"],
+                "correctness": correctness,
+                "candidate_base_pass_at_1": execution["aggregate"]["base_pass_at_1"],
+                "syntax_invalid_count": len(invalid),
+                "syntax_invalid_task_ids": invalid,
+                "code_execution": execution,
+            }
+        )
 
     def prepare_evolution_baseline(
         self, reuse_baseline: Path | None
@@ -399,23 +470,7 @@ class DiffuCoderKVPolicyEvaluator:
                 },
             }
         )
-        execution = self._evalplus(
-            result["task_outputs"], self.config.run.run_dir / "code_execution" / policy.name
-        )
-        correctness = compare_base_correctness(baseline_execution, execution)
-        invalid = [
-            item["task_id"] for item in result["task_outputs"] if not item.get("syntax_valid", True)
-        ]
-        result.update(
-            {
-                "quality_loss": correctness["base_regression_rate"],
-                "correctness": correctness,
-                "candidate_base_pass_at_1": execution["aggregate"]["base_pass_at_1"],
-                "syntax_invalid_count": len(invalid),
-                "syntax_invalid_task_ids": invalid,
-                "code_execution": execution,
-            }
-        )
+        self._score_code(result, policy.name, baseline_execution)
         _write_json(path, result)
         return result
 
@@ -485,6 +540,7 @@ class DiffuCoderKVPolicyEvaluator:
                 "parameters": policy.to_dict(),
                 "candidate_base_pass_at_1": record.get("candidate_base_pass_at_1"),
                 "base_regression_rate": record.get("quality_loss"),
+                "compute_fraction": record["compute_fraction"],
                 "speedup_vs_dense": record["speedup_vs_dense"],
                 "syntax_invalid_count": record.get("syntax_invalid_count"),
             }

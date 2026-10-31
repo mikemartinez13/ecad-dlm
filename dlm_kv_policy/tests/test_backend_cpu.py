@@ -48,7 +48,18 @@ class FakeModel(nn.Module):
         super().__init__()
         self.model = FakeCore(vocab_size=32, hidden_size=8)
         self.lm_head = nn.Linear(8, 32, bias=False)
-        self.config = type("Config", (), {"mask_token_id": 31})()
+        self.config = type(
+            "Config",
+            (),
+            {
+                "mask_token_id": 31,
+                "hidden_size": 8,
+                "intermediate_size": 8,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "num_hidden_layers": 2,
+            },
+        )()
 
 
 class BackendCpuTests(unittest.TestCase):

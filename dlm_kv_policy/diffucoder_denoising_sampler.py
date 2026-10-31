@@ -54,6 +54,63 @@ class DiffuCoderDenoisingSampler:
         return input_ids, pairwise, positions
 
     @torch.no_grad()
+    def commit_tokens(
+        self,
+        x: torch.Tensor,
+        mask_index: torch.Tensor,
+        mask_logits: torch.Tensor,
+        *,
+        step: int,
+        steps: int,
+        timesteps: torch.Tensor,
+        temperature: float,
+        top_p: float,
+        top_k: int | None,
+        algorithm: str,
+        algorithm_temperature: float,
+    ) -> None:
+        """Unmask this step's tokens in ``x`` in place, as DiffuCoder's sampler does."""
+
+        mask_token_id = int(self.model.config.mask_token_id)
+        t, s = timesteps[step], timesteps[step + 1]
+        if algorithm == "origin":
+            probability = 1 - s / t if step < steps - 1 else 1
+            proposed = torch.full_like(x[mask_index], mask_token_id)
+            selected = torch.rand(*proposed.shape, device=x.device) < probability
+            _, proposed[selected] = self.sample_tokens(
+                mask_logits[selected], temperature=temperature, top_p=top_p, top_k=top_k
+            )
+            x[mask_index] = proposed
+            return
+        if algorithm == "maskgit_plus":
+            confidence, proposed = self.sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k)
+        elif algorithm == "topk_margin":
+            confidence, proposed = self.sample_tokens(
+                mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, margin_confidence=True
+            )
+        elif algorithm == "entropy":
+            confidence, proposed = self.sample_tokens(
+                mask_logits, temperature, top_p=top_p, top_k=top_k, neg_entropy=True
+            )
+        else:
+            raise ValueError(f"Unsupported DiffuCoder algorithm {algorithm!r}")
+        masks_per_row = int(mask_index.sum().item() / x.shape[0])
+        transfer = int(masks_per_row * (1 - s / t)) if step < steps - 1 else masks_per_row
+        if transfer > 0:
+            full_confidence = torch.full_like(x, -torch.inf, dtype=mask_logits.dtype)
+            full_confidence[mask_index] = confidence
+            if algorithm_temperature == 0:
+                _, selected_positions = torch.topk(full_confidence, transfer)
+            else:
+                selected_positions = torch.multinomial(
+                    F.softmax(full_confidence / algorithm_temperature, dim=-1), num_samples=transfer
+                )
+            proposed_full = torch.full_like(x, mask_token_id)
+            proposed_full[mask_index] = proposed
+            rows = torch.arange(x.shape[0], device=x.device).unsqueeze(1).expand_as(selected_positions)
+            x[rows, selected_positions] = proposed_full[rows, selected_positions]
+
+    @torch.no_grad()
     def generate(
         self,
         prompt: torch.Tensor,
@@ -91,45 +148,20 @@ class DiffuCoderDenoisingSampler:
                 step=step,
                 total_steps=steps,
             )
-            mask_logits = result.mask_logits
-            t, s = timesteps[step], timesteps[step + 1]
             previous = x.clone()
-            if algorithm == "origin":
-                probability = 1 - s / t if step < steps - 1 else 1
-                proposed = torch.full_like(x[mask_index], mask_token_id)
-                selected = torch.rand(*proposed.shape, device=x.device) < probability
-                _, proposed[selected] = self.sample_tokens(
-                    mask_logits[selected], temperature=temperature, top_p=top_p, top_k=top_k
-                )
-                x[mask_index] = proposed
-            else:
-                if algorithm == "maskgit_plus":
-                    confidence, proposed = self.sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k)
-                elif algorithm == "topk_margin":
-                    confidence, proposed = self.sample_tokens(
-                        mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, margin_confidence=True
-                    )
-                elif algorithm == "entropy":
-                    confidence, proposed = self.sample_tokens(
-                        mask_logits, temperature, top_p=top_p, top_k=top_k, neg_entropy=True
-                    )
-                else:
-                    raise ValueError(f"Unsupported DiffuCoder algorithm {algorithm!r}")
-                masks_per_row = int(mask_index.sum().item() / x.shape[0])
-                transfer = int(masks_per_row * (1 - s / t)) if step < steps - 1 else masks_per_row
-                if transfer > 0:
-                    full_confidence = torch.full_like(x, -torch.inf, dtype=mask_logits.dtype)
-                    full_confidence[mask_index] = confidence
-                    if algorithm_temperature == 0:
-                        _, selected_positions = torch.topk(full_confidence, transfer)
-                    else:
-                        selected_positions = torch.multinomial(
-                            F.softmax(full_confidence / algorithm_temperature, dim=-1), num_samples=transfer
-                        )
-                    proposed_full = torch.full_like(x, mask_token_id)
-                    proposed_full[mask_index] = proposed
-                    rows = torch.arange(x.shape[0], device=x.device).unsqueeze(1).expand_as(selected_positions)
-                    x[rows, selected_positions] = proposed_full[rows, selected_positions]
+            self.commit_tokens(
+                x,
+                mask_index,
+                result.mask_logits,
+                step=step,
+                steps=steps,
+                timesteps=timesteps,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                algorithm=algorithm,
+                algorithm_temperature=algorithm_temperature,
+            )
             state.update_after_sampling(previous, x, step)
             if collect_history:
                 history.append(x.detach().cpu().clone())

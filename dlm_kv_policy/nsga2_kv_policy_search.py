@@ -1,4 +1,14 @@
-"""Small resumable NSGA-II search over structured DiffuCoder KV policies."""
+"""Small resumable NSGA-II search over structured DiffuCoder KV policies.
+
+Objectives are (quality_loss, compute_fraction), both minimized. The quality
+loss is chosen by ``evolution.quality_objective``:
+
+- ``base_regression_rate``: generate every task end to end and run paired
+  EvalPlus base tests (coarse: one bit per task).
+- ``replay_divergence``: forced-trajectory replay; divergence events per task
+  (see forced_trajectory_replay.py). The whole generation shares one dense
+  pass, and no code is executed. Use it only once PROXY_VALIDATION.md passes.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +20,9 @@ import random
 from typing import Any
 
 from .kv_policy_experiment_config import KVPolicyNSGA2SearchConfig, KVPolicyExperimentConfig
-from .dkv_decode_refresh_policy import DKVDecodeRefreshPolicy, IMPLEMENTATION_REVISION as POLICY_IMPLEMENTATION_REVISION
+from .dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
 from .code_correctness_and_latency_evaluator import DiffuCoderKVPolicyEvaluator
-
-
-IMPLEMENTATION_REVISION = "categorical_nsga2_fast_selection_v2"
+from .forced_trajectory_replay import replay_policies, summarize
 
 
 @dataclass(frozen=True)
@@ -44,21 +52,28 @@ class KVRefreshPolicyGenome:
 @dataclass(frozen=True)
 class EvaluatedKVPolicy:
     genome: KVRefreshPolicyGenome
-    regression: float
-    wall_time_seconds: float
-    candidate_pass_at_1: float
-    syntax_invalid_count: int
+    quality_loss: float  # base regression rate, or replay divergence events per task
+    compute_fraction: float  # policy FLOPs / dense FLOPs; the speed objective
+    # Recorded only with the EvalPlus objective, for information.
+    wall_time_seconds: float | None = None
+    candidate_pass_at_1: float | None = None
+    syntax_invalid_count: int | None = None
+    output_hash: str = ""
+    same_output_as: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "genome": self.genome.to_dict(),
             "policy_name": self.genome.policy().name,
             "objectives": {
-                "base_regression_rate": self.regression,
-                "median_generation_wall_time": self.wall_time_seconds,
+                "quality_loss": self.quality_loss,
+                "compute_fraction": self.compute_fraction,
             },
+            "median_generation_wall_time": self.wall_time_seconds,
             "candidate_base_pass_at_1": self.candidate_pass_at_1,
             "syntax_invalid_count": self.syntax_invalid_count,
+            "output_hash": self.output_hash,
+            "same_output_as": self.same_output_as,
         }
 
     @classmethod
@@ -66,10 +81,13 @@ class EvaluatedKVPolicy:
         objectives = raw["objectives"]
         return cls(
             genome=KVRefreshPolicyGenome.from_dict(raw["genome"]),
-            regression=float(objectives["base_regression_rate"]),
-            wall_time_seconds=float(objectives["median_generation_wall_time"]),
-            candidate_pass_at_1=float(raw["candidate_base_pass_at_1"]),
-            syntax_invalid_count=int(raw["syntax_invalid_count"]),
+            quality_loss=float(objectives["quality_loss"]),
+            compute_fraction=float(objectives["compute_fraction"]),
+            wall_time_seconds=raw.get("median_generation_wall_time"),
+            candidate_pass_at_1=raw.get("candidate_base_pass_at_1"),
+            syntax_invalid_count=raw.get("syntax_invalid_count"),
+            output_hash=raw.get("output_hash", ""),
+            same_output_as=raw.get("same_output_as"),
         )
 
 
@@ -81,9 +99,9 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _dominates(left: EvaluatedKVPolicy, right: EvaluatedKVPolicy) -> bool:
-    no_worse = left.regression <= right.regression and left.wall_time_seconds <= right.wall_time_seconds
+    no_worse = left.quality_loss <= right.quality_loss and left.compute_fraction <= right.compute_fraction
     return no_worse and (
-        left.regression < right.regression or left.wall_time_seconds < right.wall_time_seconds
+        left.quality_loss < right.quality_loss or left.compute_fraction < right.compute_fraction
     )
 
 
@@ -107,7 +125,7 @@ def crowding_distance(items: list[EvaluatedKVPolicy], front: list[int]) -> dict[
     distances = {index: 0.0 for index in front}
     if len(front) <= 2:
         return {index: float("inf") for index in front}
-    for objective in (lambda item: item.regression, lambda item: item.wall_time_seconds):
+    for objective in (lambda item: item.quality_loss, lambda item: item.compute_fraction):
         ordered = sorted(front, key=lambda index: objective(items[index]))
         distances[ordered[0]] = distances[ordered[-1]] = float("inf")
         low, high = objective(items[ordered[0]]), objective(items[ordered[-1]])
@@ -164,7 +182,7 @@ def initial_population(config: KVPolicyNSGA2SearchConfig) -> list[KVRefreshPolic
     seeds = [
         KVRefreshPolicyGenome(1, 8, 1, 0),      # dKV-Decode reference
         KVRefreshPolicyGenome(1, 16, 1, 0),     # speed-oriented fixed control
-        KVRefreshPolicyGenome(1, 8, 22, 0),     # zero-regression fixed control
+        KVRefreshPolicyGenome(1, 8, 22, 0),     # depth-22 fixed control
         KVRefreshPolicyGenome(1, 16, 22, 0),    # observed interaction control
     ]
     population = [
@@ -240,15 +258,13 @@ def offspring_population(
 
 def _signature(config: KVPolicyExperimentConfig, evaluator: DiffuCoderKVPolicyEvaluator) -> str:
     payload = {
-        "revision": IMPLEMENTATION_REVISION,
-        "policy_revision": POLICY_IMPLEMENTATION_REVISION,
         "evaluator_signature": evaluator.signature,
         "evolution": asdict(config.evolution),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def _evaluate(
+def _evaluate_with_evalplus(
     evaluator: DiffuCoderKVPolicyEvaluator,
     genomes: list[KVRefreshPolicyGenome],
     *,
@@ -263,14 +279,44 @@ def _evaluate(
     individuals = [
         EvaluatedKVPolicy(
             genome=genome,
-            regression=float(record["quality_loss"]),
+            quality_loss=float(record["quality_loss"]),
+            compute_fraction=float(record["compute_fraction"]),
             wall_time_seconds=float(record["median_elapsed_seconds"]),
             candidate_pass_at_1=float(record["candidate_base_pass_at_1"]),
             syntax_invalid_count=int(record["syntax_invalid_count"]),
+            output_hash=record["output_hash"],
+            same_output_as=record.get("same_output_as"),
         )
         for genome, record in zip(genomes, records)
     ]
     return baseline.record, individuals
+
+
+def _evaluate_with_replay(
+    evaluator: DiffuCoderKVPolicyEvaluator, genomes: list[KVRefreshPolicyGenome], replay_dir: Path
+) -> list[EvaluatedKVPolicy]:
+    """Score a whole population with one forced-trajectory replay."""
+
+    policies = {genome.policy().name: genome.policy() for genome in genomes}
+    config = evaluator.config
+    tasks = replay_policies(
+        evaluator.model,
+        evaluator.tokenizer,
+        evaluator.tasks,
+        policies,
+        config.generation,
+        config.model.device,
+        replay_dir / "tasks",
+    )
+    results = summarize(tasks, list(policies))
+    return [
+        EvaluatedKVPolicy(
+            genome=genome,
+            quality_loss=results[genome.policy().name]["divergence_events_per_task"],
+            compute_fraction=results[genome.policy().name]["compute_fraction"],
+        )
+        for genome in genomes
+    ]
 
 
 def run_kv_policy_nsga2_search(
@@ -306,7 +352,8 @@ def run_kv_policy_nsga2_search(
     baseline = None
     baseline_execution = None
     baseline_summary = None
-    if completed < settings.generations:
+    use_replay = settings.quality_objective == "replay_divergence"
+    if completed < settings.generations and not use_replay:
         baseline, baseline_execution, baseline_summary = evaluator.prepare_evolution_baseline(
             reuse_baseline
         )
@@ -317,18 +364,21 @@ def run_kv_policy_nsga2_search(
             if generation == 0
             else offspring_population(population, settings, generation, forbidden=seen)
         )
-        _, evaluated = _evaluate(
-            evaluator,
-            genomes,
-            baseline=baseline,
-            baseline_execution=baseline_execution,
-        )
+        if use_replay:
+            evaluated = _evaluate_with_replay(evaluator, genomes, root / "replay" / f"generation_{generation:03d}")
+        else:
+            _, evaluated = _evaluate_with_evalplus(
+                evaluator,
+                genomes,
+                baseline=baseline,
+                baseline_execution=baseline_execution,
+            )
         seen.update(genomes)
         population = evaluated if generation == 0 else environmental_selection(population + evaluated, settings.population_size)
         pareto = [population[index] for index in non_dominated_fronts(population)[0]]
         summary = {
-            "implementation_revision": IMPLEMENTATION_REVISION,
             "generation": generation,
+            "quality_objective": settings.quality_objective,
             "jobs_run": 1 if last_summary is None else last_summary["jobs_run"] + 1,
             "baseline": baseline_summary,
             "evaluated": [item.to_dict() for item in evaluated],
@@ -338,7 +388,6 @@ def run_kv_policy_nsga2_search(
         _write_json(root / "generations" / f"generation_{generation:03d}.json", summary)
         completed += 1
         state = {
-            "implementation_revision": IMPLEMENTATION_REVISION,
             "signature": signature,
             "completed_generations": completed,
             "population": [item.to_dict() for item in population],
@@ -348,7 +397,6 @@ def run_kv_policy_nsga2_search(
         last_summary = summary
 
     result = {
-        "implementation_revision": IMPLEMENTATION_REVISION,
         "completed_generations": completed,
         "target_generations": settings.generations,
         "complete": completed == settings.generations,

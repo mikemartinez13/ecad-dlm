@@ -10,8 +10,6 @@ import torch
 from .fixed_token_refresh_policy import TokenRefreshDecision
 from .denoising_token_state import DenoisingTokenCategory
 
-IMPLEMENTATION_REVISION = "depth_boundary_v2"
-
 
 @dataclass(frozen=True)
 class DKVDecodeRefreshPolicy:
@@ -65,7 +63,6 @@ class DKVDecodeRefreshPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "implementation_revision": IMPLEMENTATION_REVISION,
             "cache_reloading_step": self.cache_reloading_step,
             "additional_decoded_forwards": self.additional_decoded_forwards,
             "refresh_depth": self.refresh_depth,
@@ -128,7 +125,9 @@ class DKVDecodeRefreshPolicy:
                 ).any(dim=1)
                 local &= valid
                 active |= local
-            depths[mask | newly_decoded | local] = 1
+            # refresh_depth is one-based: depth 1 recomputes every layer.
+            # Delayed rows are not trusted from cache yet, so they get depth 1.
+            depths[mask | newly_decoded | delayed | local] = 1
             return TokenRefreshDecision(
                 active=active,
                 refresh_depth=depths,

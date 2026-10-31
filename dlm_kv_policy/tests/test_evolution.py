@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -14,8 +15,8 @@ from dlm_kv_policy.nsga2_kv_policy_search import (
 )
 
 
-def individual(genome: KVRefreshPolicyGenome, regression: float, wall_time: float) -> EvaluatedKVPolicy:
-    return EvaluatedKVPolicy(genome, regression, wall_time, 0.0, 0)
+def individual(genome: KVRefreshPolicyGenome, quality_loss: float, compute_fraction: float) -> EvaluatedKVPolicy:
+    return EvaluatedKVPolicy(genome, quality_loss=quality_loss, compute_fraction=compute_fraction)
 
 
 class EvolutionTests(unittest.TestCase):
@@ -72,8 +73,10 @@ class EvolutionTests(unittest.TestCase):
                         {
                             "quality_loss": 0.0 if policy.refresh_depth == 22 else 0.1,
                             "median_elapsed_seconds": 1000.0 - 10.0 * policy.cache_reloading_step,
+                            "compute_fraction": 1.0 - 0.01 * policy.cache_reloading_step,
                             "candidate_base_pass_at_1": 0.7,
                             "syntax_invalid_count": 0,
+                            "output_hash": policy.name,
                         }
                     )
                 return records
@@ -94,6 +97,44 @@ class EvolutionTests(unittest.TestCase):
             self.assertEqual(first["completed_generations"], 1)
             self.assertTrue(second["complete"])
             self.assertTrue((Path(directory) / "resume" / "evolution" / "generations" / "generation_001.json").is_file())
+
+    def test_replay_objective_scores_a_generation_without_evalplus(self) -> None:
+        def fake_replay(model, tokenizer, tasks, policies, generation, device, task_dir):
+            # Longer refresh intervals: cheaper but more divergent.
+            rows = {
+                name: [{"token_tv": policy.cache_reloading_step / 4, "kl": 0.0, "kl_masked_mean": 0.0,
+                        "top1_flip": False, "position_flip": False, "dense_margin": 1.0,
+                        "dense_position_margin": 0.0}]
+                for name, policy in policies.items()
+            }
+            flops = {name: 100 - policy.cache_reloading_step for name, policy in policies.items()}
+            return [{"dense_flops": 100, "flops": flops, "policies": rows}]
+
+        class FakeEvaluator:
+            signature = "cpu-test"
+            model = tokenizer = None
+            tasks: list = []
+
+            def prepare_evolution_baseline(self, reuse_baseline):
+                raise AssertionError("The replay objective needs no dense baseline")
+
+        root = Path(__file__).resolve().parents[1]
+        config = load_kv_policy_experiment_config(root / "configs" / "diffucoder7b_dkv_decode_nsga2_search_64tasks_8populations.yaml")
+        config.evolution.quality_objective = "replay_divergence"
+        config.evolution.population_size = 4
+        config.evolution.generations = 2
+        evaluator = FakeEvaluator()
+        evaluator.config = config
+        with TemporaryDirectory() as directory, mock.patch(
+            "dlm_kv_policy.nsga2_kv_policy_search.replay_policies", fake_replay
+        ):
+            config.run.output_dir = directory
+            config.run.name = "replay"
+            result = run_kv_policy_nsga2_search(config, evaluator, reuse_baseline=None, generations_this_job=2)
+        self.assertTrue(result["complete"])
+        pareto = result["last_generation"]["pareto"]
+        self.assertEqual(result["last_generation"]["quality_objective"], "replay_divergence")
+        self.assertTrue(all(item["objectives"]["quality_loss"] > 0 for item in pareto))
 
 
 if __name__ == "__main__":

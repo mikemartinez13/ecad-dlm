@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 
+from .compute_cost import ModelShape, dense_forward_flops
 from .denoising_token_state import DenoisingTokenState
 
 
@@ -20,6 +21,9 @@ class DenseDiffuCoderBaseline:
 
     def __init__(self, model: torch.nn.Module) -> None:
         self.model = model
+        # Deterministic cost of every forward since this backend was created.
+        self.shape = ModelShape.from_model(model)
+        self.flops = 0
 
     def start_generation(self, sequence_length: int, *, collect_diagnostics: bool = False) -> None:
         del sequence_length, collect_diagnostics
@@ -44,6 +48,7 @@ class DenseDiffuCoderBaseline:
             use_cache=False,
         ).logits
         logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+        self.flops += dense_forward_flops(self.shape, input_ids.shape[1])
         states = state.classify(input_ids, step)
         return DenseForwardResult(mask_logits=logits[states.eq(2)])
 

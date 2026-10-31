@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from .active_token_kv_cache import ActiveTokenKVCache
+from .compute_cost import ModelShape, layer_flops, lm_head_flops
 from .cache_and_trajectory_diagnostics import KVCacheDiagnostics
 from .fixed_token_refresh_policy import TokenRefreshDecision
 from .denoising_token_state import DenoisingTokenState
@@ -106,6 +107,9 @@ class DiffuCoderActiveTokenKVBackend:
             dtype=next(model.parameters()).dtype,
         )
         self.diagnostics = KVCacheDiagnostics()
+        # Deterministic cost of every forward since this backend was created.
+        self.shape = ModelShape.from_model(model)
+        self.flops = 0
 
     def set_policy(self, policy: Any) -> None:
         policy.validate()
@@ -244,6 +248,7 @@ class DiffuCoderActiveTokenKVBackend:
             if self.collect_diagnostics:
                 self.diagnostics.record_active(step, layer_id, int(positions.numel()), valid_count)
             if positions.numel():
+                self.flops += layer_flops(self.shape, int(positions.numel()), input_ids.shape[1])
                 self._layer_forward(
                     layer=layer,
                     layer_id=layer_id,
@@ -261,6 +266,7 @@ class DiffuCoderActiveTokenKVBackend:
         prediction_positions = torch.where(mask_positions.eq(0), mask_positions, mask_positions - 1)
         unique_positions, inverse = torch.unique(prediction_positions, sorted=True, return_inverse=True)
         logits = self.model.lm_head(self.cache.final(unique_positions))[0, inverse]
+        self.flops += lm_head_flops(self.shape, int(unique_positions.numel()))
         if self.collect_diagnostics:
             self.diagnostics.record_lm_head(int(unique_positions.numel()), input_ids.shape[1])
         return ActiveTokenForwardResult(mask_logits=logits, decision=decision)

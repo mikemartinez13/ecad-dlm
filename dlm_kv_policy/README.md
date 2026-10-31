@@ -10,9 +10,179 @@ one-based refresh boundary \(\ell^\star\). Current masks and newly decoded
 tokens always start at layer one; stable decoded tokens may resume deeper.
 
 The two evolutionary objectives are paired EvalPlus base-test
-regression rate and measured median generation wall time. Token agreement,
-first divergence, K/V drift, syntax validity, and active-row fractions are
+regression rate and `compute_fraction`: the policy's FLOPs divided by native
+dense FLOPs, counted from the rows each forward computes (`compute_cost.py`).
+It is deterministic and identical on every GPU type, so the search never
+depends on which GPU it ran on. Wall-clock time is still recorded, and the
+reported speedup should be measured on finalists on one GPU type. On an A40, wall
+time fell only about 0.38x as fast as recomputed rows; about half of dense
+time is fixed overhead that caching does not remove. Token agreement, first
+divergence, K/V drift, syntax validity, and active-row fractions are
 diagnostics only.
+
+## Status of results before 2026-10-30: read this first
+
+Do not cite the policy comparisons, ablation rankings, or search results
+produced before 2026-10-30 (everything under `dlm_kv_policy/` on scratch
+before that date). They are **unmeasured**, not tied. Three problems:
+
+1. **Regression rate measured sampling luck.** Generation used temperature
+   0.4. Reruns of the same policy are byte-identical, and EvalPlus pass/fail
+   was identical across 2,560 repeated task comparisons. But any cache policy
+   changes the generated code for 34–50 of 64 tasks, because one changed
+   sampled token alters every later step. Across 49 policies, fail→pass flips
+   (mean 3.0) were as common as pass→fail flips (mean 2.7). Only `delay_0`
+   and `age_immediate` were clearly worse than dense. Cached policies
+   "beating" dense (76.6% vs 68.75% pass) is a symptom of this noise.
+2. **`delay` did nothing when `refresh_depth > 1`.** Delayed rows got the deep
+   boundary instead of a full recompute, so `delay=1` and `delay=2` produced
+   identical outputs. Delayed rows are now always fully recomputed. Only
+   policies with `delay >= 2` and `refresh_depth > 1` change.
+3. **The `depth_15`/`depth_22` `_v1` runs were not depth policies.** They ran
+   before depth was implemented, so they are byte-identical to the dKV
+   reference. They are not reruns of the `_v2` runs.
+
+Hence "evolved vs hand-tuned", "the evolved policy has 0% regression", and the
+ablation ordering are not established. The diagnostics below measure cache
+quality directly.
+
+## Diagnostics: noise floor and forced-trajectory replay
+
+Two programs, both submitted with
+`scripts/slurm/run_diffucoder_kv_diagnostics.sh` from the repository root:
+
+| Program | Experiments | What it answers |
+| --- | --- | --- |
+| `output_variance_study.py` | E1, E2, E3 | How many tasks change, and in which direction, under a new seed, greedy decoding, a different attention kernel, or a cache policy |
+| `forced_trajectory_replay.py` | E4 | At every step on the dense trajectory: KL(dense‖cached), top-1 token flips, committed-position flips, and the dense top-1/top-2 margin at each flip |
+
+The configs `diffucoder7b_output_variance_sampling_t04_64tasks.yaml`
+(temperature 0.4) and `diffucoder7b_output_variance_greedy_64tasks.yaml`
+(greedy) drive both programs:
+
+```bash
+CONFIGS=dlm_kv_policy/configs
+LAUNCH=dlm_kv_policy/scripts/slurm/run_diffucoder_kv_diagnostics.sh
+POLICIES=full_refresh_every_step,dkv_reference,depth_22,delay_0
+
+sbatch $LAUNCH output_variance_study --config $CONFIGS/diffucoder7b_output_variance_greedy_64tasks.yaml
+sbatch $LAUNCH output_variance_study --config $CONFIGS/diffucoder7b_output_variance_sampling_t04_64tasks.yaml
+sbatch $LAUNCH forced_trajectory_replay --config $CONFIGS/diffucoder7b_output_variance_greedy_64tasks.yaml --policies $POLICIES
+sbatch $LAUNCH forced_trajectory_replay --config $CONFIGS/diffucoder7b_output_variance_sampling_t04_64tasks.yaml --policies $POLICIES
+```
+
+Both programs store results under `<run.name>/<GPU type>/`, e.g.
+`diffucoder7b_output_variance_greedy_v1/NVIDIA_A40/`. Different GPU types
+round bf16 differently, which at temperature 0.4 changes most outputs, so only
+compare results from the same GPU-type folder. The launcher accepts A100,
+A6000, or A40; pin one with `sbatch --constraint=a40 ...` when two jobs must
+be compared. B200 and RTX PRO 6000 need a CUDA 12.8 PyTorch build.
+
+Each variance study writes `variants/<name>.json` and `variance_report.json`,
+and prints one row per variant with its changed tasks, P→F and F→P flips, and
+pass@1. Finished variants are skipped on resubmission.
+
+Each replay writes `forced_trajectory_replay/tasks/task_NNN.json` (per-step
+rows) and `forced_trajectory_replay/summary.json`. Finished tasks are skipped
+on resubmission. Add `--max-tasks 2` for a quick check first.
+
+Reading the replay:
+
+- `divergence_events_per_task` is the continuous proxy and the replay search
+  objective. Each step scores the total variation distance between the dense
+  and cached decoding distributions at the committed position, plus 1 if the
+  committed position changes. Under greedy decoding it counts changed
+  decisions. TV is a lower bound on how often a shared-random-number sampler
+  diverges, which is fine for ranking.
+- A position change only counts if dense's own position margin is at least
+  `POSITION_TIE_MARGIN` (0.01). Below that, dense was breaking a tie, and the
+  flip is rounding noise (`PROXY_VALIDATION.md`).
+  `position_flips` counts all flips; `position_flips_counted` counts the rest.
+  The summary recomputes the proxy from the saved per-step rows.
+- Each policy keeps its own cache along the forced trajectory, so stale
+  entries accumulate on its own refresh schedule
+  (`tests/test_replay_compounding.py`). Only token-sequence divergence is
+  excluded.
+- `full_refresh_every_step` reuses nothing. Its KL is the cached backend's own
+  rounding difference from native dense; real policies must clearly exceed it.
+- `top1_flips_at_near_ties` counts flips where dense's top-1/top-2 probability
+  margin was below 0.1. Flips only at near-ties are benign; flips at large
+  margins mean the cache is wrong.
+- `dense_output_hash` should equal the `output_hash` of the dense variant with
+  the same settings, which confirms the replay followed the real trajectory.
+- To check the proxy before using it as a search objective, compare each
+  policy's KL p99 and flip count with its greedy pass→fail count from E2.
+
+## Proxy validation and the replay search
+
+The search may optimize the replay proxy only after it predicts pass/fail.
+`PROXY_VALIDATION.md` fixes the criteria before results exist: Spearman ≥ 0.80
+across 15 greedy policies, and per-task AUROC ≥ 0.75. The greedy config holds
+the 15 policies. Once its variance study and replay are complete, run (no GPU
+needed):
+
+```bash
+python -m dlm_kv_policy.validate_proxy \
+  --config dlm_kv_policy/configs/diffucoder7b_output_variance_greedy_64tasks.yaml \
+  --gpu-folder NVIDIA_A100-SXM4-80GB [--count-tied-position-flips]
+```
+
+On A100, the proxy as first registered (every position flip counts) passed
+with Spearman 0.925 and AUROC 0.754. The default, which is also the search
+objective, ignores position flips where dense was tied. It scores 0.943 and
+0.816 on the same data, which is not an independent test;
+`PROXY_VALIDATION.md` describes the held-out confirmation. The reports are
+`proxy_validation_report.json` and
+`proxy_validation_report_counting_ties.json`.
+
+Setting `evolution.quality_objective: replay_divergence` makes NSGA-II score
+each generation with one shared replay instead of EvalPlus.
+`diffucoder7b_dkv_replay_nsga2_search_greedy_64tasks.yaml` is ready, but do
+not launch it until the validation verdict is PASS. Check finalists end to end
+with pass@1 afterwards.
+
+Evaluations now record `output_hash`. A policy whose output is byte-identical
+to one already scored in the run reuses that EvalPlus result and records
+`same_output_as`.
+
+## Speed ceilings and the autoregressive reference
+
+Decoding time is the sum over steps of one step's cost. Caching lowers the
+cost of a step; parallel decoding lowers the number of steps.
+`decoding_oracles.py` bounds both on one GPU type, and
+`autoregressive_reference.py` measures the model DiffuCoder was adapted from.
+Both use the greedy config and must run on the same GPU type:
+
+```bash
+for program in decoding_oracles autoregressive_reference; do
+  sbatch --constraint=a100_80gb dlm_kv_policy/scripts/slurm/run_diffucoder_kv_diagnostics.sh \
+    $program --config dlm_kv_policy/configs/diffucoder7b_output_variance_greedy_64tasks.yaml
+done
+```
+
+- **Timing curve t(n)**: wall time of one forward that recomputes n rows and
+  attends to all L positions. `minimal` is only the math a step needs;
+  `backend` is our cached backend with its bookkeeping. Each ceiling is a
+  speedup over DiffuCoder's native dense forward.
+- **Caching, speed only**: after the first step, recompute only masked rows
+  and reuse everything else forever, ignoring quality. No policy in this
+  family is faster. The script also runs it for real on the first 8 tasks to
+  check the timing model.
+- **Parallel decoding**: decode toward the greedy dense output, committing at
+  each step every masked position whose argmax already equals it. The output
+  is unchanged; the step count is how few steps the model's own predictions
+  allow under this rule.
+- **Combined, approximate**: the parallel oracle's steps at caching-oracle
+  cost. Optimistic, because fewer steps make cached entries go stale faster.
+- **Autoregressive estimate**: t(prompt) + N·t(1) with N the dense answer's
+  non-padding tokens. DiffuCoder-7B has Qwen2.5-Coder-7B's shape, so its t(1)
+  is the AR per-token cost.
+- **Autoregressive reference**: Qwen2.5-Coder-7B-Instruct, greedy with a KV
+  cache and no repetition penalty, on the same prompts: seconds per task and
+  base pass@1.
+
+Results go to `<run>/<GPU type>/decoding_oracles/` and
+`<run>/<GPU type>/autoregressive_reference/`.
 
 ## Implementation and experiment selection
 
@@ -28,6 +198,12 @@ diagnostics only.
 | `code_correctness_and_latency_evaluator.py` | Paired code correctness and generation-time measurements |
 | `nsga2_kv_policy_search.py` | Categorical NSGA-II search and checkpoint resume |
 | `kv_policy_experiment_config.py` | YAML experiment configuration |
+| `compute_cost.py` | Deterministic FLOP count used as the search's speed objective |
+| `output_variance_study.py` | E1–E3: changed tasks and flips versus a reference variant |
+| `forced_trajectory_replay.py` | E4: per-step cached-versus-dense drift on the dense trajectory; the proxy |
+| `validate_proxy.py` | Applies the pre-registered criteria in `PROXY_VALIDATION.md` |
+| `decoding_oracles.py` | Timing curve t(n), caching and parallel-decoding ceilings, autoregressive estimate |
+| `autoregressive_reference.py` | Qwen2.5-Coder-7B-Instruct time per task and pass@1 on the same tasks |
 
 All modes use `scripts/slurm/run_diffucoder_kv_policy_experiments.sh`:
 
@@ -133,7 +309,7 @@ sbatch --constraint=a40 --time=02:00:00 \
 `diffucoder7b_dkv_decode_nsga2_search_64tasks_8populations.yaml` searches a four-coordinate dKV policy:
 decoded-token delay, global refresh interval, stable-token refresh depth, and
 terminal full-refresh length. The only NSGA-II objectives are paired
-EvalPlus-base regression rate and measured candidate wall time. Token
+EvalPlus-base regression rate and the deterministic compute fraction. Token
 agreement, syntax, recoveries, and active-row fractions remain diagnostics.
 
 Each candidate still generates all 64 prompts and receives its own paired

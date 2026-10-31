@@ -2,6 +2,18 @@
 
 The [main README](../../README.md#evolutionary-caching-for-dlms) covers DiffuCoder setup, inference, evolution, and scoring. Run commands from the repository root with your DLM Python environment active. Paths below are placeholders to replace with your own files.
 
+## Caveat on residual-cache results
+
+The residual-cache searches below concluded that zero base-test regressions
+required about 99% of full compute. That metric is unreliable: at temperature
+0.4, any numerical perturbation re-rolls the sampled output, and the KV policy
+runs show pass→fail and fail→pass flips in equal numbers. A zero-regression
+constraint therefore favors changing nothing. Token disagreement overstates
+drift too, because one early flip changes every later token. Re-score a few
+residual-cache schedules with forced-trajectory replay before treating this
+approach as failed. See the
+[KV policy guide](../../dlm_kv_policy/README.md#status-of-results-before-2026-10-30-read-this-first).
+
 ## Caching implementation
 
 The shared runner adapts ECAD's image-model search to diffusion language models. NSGA-II evolves binary decisions to recompute or reuse attention and MLP outputs for groups of layers and denoising steps. Model weights stay fixed, and one model remains loaded throughout candidate evaluation.

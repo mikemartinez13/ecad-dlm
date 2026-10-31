@@ -81,6 +81,8 @@ class KVPolicyNSGA2SearchConfig:
     population_size: int = 8
     generations: int = 8
     seed: int = 0
+    # "base_regression_rate" (EvalPlus) or "replay_divergence" (forced-trajectory replay).
+    quality_objective: str = "base_regression_rate"
     delays: list[int] = field(default_factory=lambda: [1, 2])
     refresh_intervals: list[int] = field(default_factory=lambda: [4, 8, 12, 16])
     refresh_depths: list[int] = field(default_factory=lambda: [1, 18, 20, 22, 24])
@@ -95,6 +97,8 @@ class KVPolicyNSGA2SearchConfig:
             self.refresh_depths,
             self.terminal_refresh_steps,
         )
+        if self.quality_objective not in {"base_regression_rate", "replay_divergence"}:
+            raise ValueError("evolution.quality_objective must be base_regression_rate or replay_divergence")
         if self.population_size < 2 or self.generations < 1:
             raise ValueError("evolution population_size must be >= 2 and generations positive")
         if any(not values for values in choices):
