@@ -184,6 +184,32 @@ done
 Results go to `<run>/<GPU type>/decoding_oracles/` and
 `<run>/<GPU type>/autoregressive_reference/`.
 
+## Stale K/V error study
+
+`stale_kv_error_study.py` asks whether the error of a reused K/V row,
+dense minus cached, can be predicted from the row's layer, K or V, head, age
+and row type (prompt, answer or padding) and from the cached vector itself.
+This is the question behind training-free corrections for image diffusion
+caches. It fits corrections from one scale up to a full affine map on three
+folds of tasks and scores them on the fourth. Keys are compared before RoPE.
+Nothing is corrected during decoding. The design and decision rule are
+pre-registered in `STALE_KV_ERROR_STUDY.md`.
+
+```bash
+script=dlm_kv_policy/scripts/slurm/run_diffucoder_kv_diagnostics.sh
+config=dlm_kv_policy/configs/diffucoder7b_output_variance_greedy_64tasks.yaml
+for fold in 0 1 2 3; do
+  sbatch --constraint=a100_80gb $script stale_kv_error_study collect --config $config --fold $fold
+done
+# after all four: fit, then evaluate per fold, then report
+sbatch --constraint=a100_80gb $script stale_kv_error_study fit --config $config --gpu-folder NVIDIA_A100-SXM4-80GB
+```
+
+It needs the forced-trajectory replay of the same config on the same GPU
+type, which supplies each task's final dense output. Results go to
+`<run>/<GPU type>/stale_kv_error_study/`; the running sums alone take about
+16 GB.
+
 ## Implementation and experiment selection
 
 | File | Responsibility |
@@ -204,6 +230,7 @@ Results go to `<run>/<GPU type>/decoding_oracles/` and
 | `validate_proxy.py` | Applies the pre-registered criteria in `PROXY_VALIDATION.md` |
 | `decoding_oracles.py` | Timing curve t(n), caching and parallel-decoding ceilings, autoregressive estimate |
 | `autoregressive_reference.py` | Qwen2.5-Coder-7B-Instruct time per task and pass@1 on the same tasks |
+| `stale_kv_error_study.py` | Whether stale K/V error is predictable; pre-registered in `STALE_KV_ERROR_STUDY.md` |
 
 All modes use `scripts/slurm/run_diffucoder_kv_policy_experiments.sh`:
 

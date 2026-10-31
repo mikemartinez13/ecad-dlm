@@ -49,7 +49,7 @@ import argparse
 import importlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.nn.functional as F
@@ -180,6 +180,14 @@ def large_margin_decision_changes(
     )
 
 
+def load_top_p_logits(model: torch.nn.Module):
+    """DiffuCoder's own top-p filter, from the generation_utils next to its modeling code."""
+
+    return importlib.import_module(
+        model.__class__.__module__.replace("modeling_dream", "generation_utils")
+    ).top_p_logits
+
+
 def replay_task(
     model: torch.nn.Module,
     sampler: DiffuCoderDenoisingSampler,
@@ -188,8 +196,13 @@ def replay_task(
     attention_mask: torch.Tensor,
     generation: Any,
     top_p_logits,
+    on_step: Callable[[int, torch.Tensor, DenoisingTokenState], None] | None = None,
 ) -> dict[str, Any]:
-    """Generate one task densely while scoring every cached policy at every step."""
+    """Generate one task densely while scoring every cached policy at every step.
+
+    ``on_step(step, x, state)``, if given, runs after every backend's forward
+    and before the dense commit.
+    """
 
     mask_token_id = int(model.config.mask_token_id)
     _, model_attention_mask, position_ids = sampler._attention_inputs(
@@ -219,6 +232,8 @@ def replay_task(
             name: backend.forward_mask_logits(**forward_inputs).mask_logits
             for name, backend in cached_backends.items()
         }
+        if on_step is not None:
+            on_step(step, x, state)
 
         # Advance the dense trajectory exactly as the normal sampler would.
         previous = x.clone()
@@ -278,9 +293,7 @@ def replay_policies(
     if generation.algorithm != "entropy" or generation.algorithm_temperature != 0:
         raise ValueError("Replay supports DiffuCoder's entropy ordering with algorithm_temperature 0")
     sampler = DiffuCoderDenoisingSampler(DenseDiffuCoderBaseline(model))
-    top_p_logits = importlib.import_module(
-        model.__class__.__module__.replace("modeling_dream", "generation_utils")
-    ).top_p_logits
+    top_p_logits = load_top_p_logits(model)
     cached_backends = {name: DiffuCoderActiveTokenKVBackend(model, policy) for name, policy in policies.items()}
 
     task_dir.mkdir(parents=True, exist_ok=True)

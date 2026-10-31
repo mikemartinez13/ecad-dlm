@@ -110,6 +110,9 @@ class DiffuCoderActiveTokenKVBackend:
         # Deterministic cost of every forward since this backend was created.
         self.shape = ModelShape.from_model(model)
         self.flops = 0
+        # Optional callback(layer_id, positions, keys, values) with the pre-RoPE
+        # K/V of every recomputed row; used by stale_kv_error_study.py.
+        self.kv_observer = None
 
     def set_policy(self, policy: Any) -> None:
         policy.validate()
@@ -149,6 +152,8 @@ class DiffuCoderActiveTokenKVBackend:
         query = attention.q_proj(normalized).view(batch, count, self.num_heads, self.head_dim).transpose(1, 2)
         keys = attention.k_proj(normalized).view(batch, count, self.num_kv_heads, self.head_dim).transpose(1, 2)
         values = attention.v_proj(normalized).view(batch, count, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        if self.kv_observer is not None:
+            self.kv_observer(layer_id, positions, keys, values)
         active_cos = cos.index_select(1, positions)
         active_sin = sin.index_select(1, positions)
         query, keys = _apply_rope(query, keys, active_cos, active_sin)
