@@ -1,6 +1,12 @@
+from contextlib import redirect_stdout
+import io
+import json
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 
+import numpy as np
 import torch
 
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
@@ -9,14 +15,19 @@ from dlm_kv_policy.stale_kv_error_study import (
     COMBOS,
     FOLDS,
     METHODS,
+    POLICIES,
     StaleRowReplay,
     add_held_out,
     add_rows,
     assign_folds,
     empty_held_out,
     empty_sums,
+    fit,
     fit_methods,
     linear_maps,
+    load_fit,
+    path_check,
+    report,
     residual_energy,
     row_types,
 )
@@ -130,6 +141,83 @@ class FitTests(unittest.TestCase):
         torch.testing.assert_close(held["residual"][:, 0, 0], in_sample[:, 0, 0])
         self.assertEqual(held["residual"].shape[0], len(METHODS))
         self.assertLess(held["residual"][-1].sum().item(), 0.1 * held["energy"].sum().item())
+
+
+def run_synthetic_pipeline(output_dir: Path, errors) -> dict:
+    """fit and report on synthetic stale rows: errors(c) gives e for rows c [1, rows, head_dim]."""
+
+    torch.manual_seed(0)
+    layers, head_dim, tasks, rows_per_task, combo = 2, 128, 8, 300, 3  # combo 3: age 2-3, prompt
+    folds = [index % FOLDS for index in range(tasks)]
+    data = {}
+    for index in range(tasks):
+        for layer in range(layers):
+            for kind in range(2):
+                c = torch.randn(1, rows_per_task, head_dim, dtype=torch.float64) + 1
+                data[index, layer, kind] = (c, errors(c), torch.full((rows_per_task,), combo))
+    for name in POLICIES:
+        for fold in range(FOLDS):
+            sums = empty_sums(layers, 1, head_dim, "cpu")
+            for (index, layer, kind), rows in data.items():
+                if folds[index] == fold:
+                    add_rows(sums, layer, kind, *rows)
+            (output_dir / "sums" / name).mkdir(parents=True, exist_ok=True)
+            torch.save(sums, output_dir / "sums" / name / f"fold{fold}.pt")
+    with redirect_stdout(io.StringIO()):
+        fit(output_dir)
+        for name in POLICIES:
+            (output_dir / "eval" / name).mkdir(parents=True, exist_ok=True)
+            for index in range(tasks):
+                fitted = load_fit(output_dir / "fit" / name / f"fold{folds[index]}.npz", "cpu")
+                held = empty_held_out(layers, 1, "cpu")
+                for layer in range(layers):
+                    for kind in range(2):
+                        add_held_out(held, fitted, layer, kind, *data[index, layer, kind])
+                arrays = {key: value.numpy() for key, value in held.items()}
+                np.savez(output_dir / "eval" / name / f"task_{index:03d}.npz", task_id=f"T/{index}", fold=folds[index], **arrays)
+        report(output_dir, tasks)
+    return json.loads((output_dir / "report.json").read_text())
+
+
+class SyntheticPipelineTests(unittest.TestCase):
+    def test_planted_map_is_recovered_held_out(self) -> None:
+        matrix = torch.randn(128, 128, dtype=torch.float64, generator=torch.Generator().manual_seed(5)) / 128**0.5
+        with tempfile.TemporaryDirectory() as directory:
+            result = run_synthetic_pipeline(Path(directory), lambda c: c @ matrix.T + 0.1 * torch.randn_like(c))
+        scores = result["policies"]["refresh_32"]["prompt_and_answer"]
+        self.assertGreater(scores["methods"]["M4"]["fer_mean"], 0.9)
+        self.assertEqual(scores["first_moment"], "systematic")
+        # The pipeline checks need GPU data, so without it the outcome is not trusted.
+        self.assertTrue(result["outcome"].startswith("UNTRUSTED"))
+
+    def test_pure_noise_is_not_predictable_held_out_although_it_fits_in_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = run_synthetic_pipeline(Path(directory), lambda c: torch.randn_like(c))
+        scores = result["policies"]["refresh_32"]["prompt_and_answer"]
+        m4 = scores["methods"]["M4"]
+        self.assertGreater(m4["in_sample_fer"], 0.02)
+        self.assertLess(m4["fer_mean"], 0.0)
+        self.assertLess(m4["ci_low"], 0.0)
+        self.assertEqual(scores["first_moment"], "not systematic")
+        self.assertIn("C: neither", result["outcome"])
+
+
+class PathCheckTests(unittest.TestCase):
+    def first_step(self, difference_energy):
+        layers = 3
+        return {
+            "rows": np.full((layers, 2, 1), 10.0),
+            "difference_energy": np.full((layers, 2, 1), difference_energy),
+            "dense_energy": np.full((layers, 2, 1), 1000.0),
+            "difference_sum": np.zeros((layers, 2, 1, 4)),
+        }
+
+    def test_a_path_difference_that_is_large_against_stale_error_fails(self) -> None:
+        stale_energy, stale_rows = np.full((3, 2), 100.0), np.full((3, 2), 10.0)  # 10 per row
+        self.assertTrue(path_check(self.first_step(0.01), stale_energy, stale_rows)["passed"])
+        failed = path_check(self.first_step(1.0), stale_energy, stale_rows)  # 0.1 per row: 1% of stale
+        self.assertAlmostEqual(failed["mean_share_of_stale_error"], 0.01)
+        self.assertFalse(failed["passed"])  # the layer-0 difference, 1e-3 of dense, is too large
 
 
 class SetupTests(unittest.TestCase):

@@ -211,6 +211,75 @@ All outputs go to `<run>/NVIDIA_A100-SXM4-80GB/stale_kv_error_study/`:
 - wall-clock timing;
 - other models or tasks.
 
+## Amendment (2026-10-31, before any data was collected)
+
+Made after registration, but before any collect job had started. No result
+of this study had been seen.
+
+### 1. The decision reads prompt and answer rows only
+
+Answers are about 55 tokens, so most response rows are padding. Padding is
+one token repeated, and its staleness may be very regular. Pooled into each
+(task, layer, K/V), padding could raise FER without saying anything about
+the rows that matter.
+
+The decision rule above (FER, its interval and fold means, S1 and S2) is
+therefore evaluated on **prompt and answer rows only**. Two other row sets
+are reported with the same metrics but do not count:
+- padding rows alone;
+- all rows (the readout as first registered).
+
+Row type is part of the cell, so the fits are unchanged; only the readout
+differs.
+
+### 2. Pipeline checks gate the outcome
+
+The dense K/V and the cached K/V come from different code paths (a `k_proj`
+hook and a backend callback). If the paths differed consistently, say in
+precision, every error would carry the same offset. M2 and M4 would learn
+it and report a false "systematic". Two checks guard against this. **If
+either fails on refresh_32 or refresh_256, the report marks the outcome
+untrusted**, and so it does if sanity check 1, 2 or 3 fails.
+
+- **Path check (step 0).** At step 0 both paths compute every row fresh.
+  Their difference is therefore the paths themselves, not staleness. collect
+  records it for every task at every layer. It passes if both hold:
+  - the step-0 difference energy per row, as a share of the held-out stale
+    error energy per row (prompt and answer rows), averaged over (layer
+    1–27, K/V), is at most **0.02**. A consistent offset can add at most its
+    energy share to FER, so a pass bounds that inflation at 0.02;
+  - at layer 0, the step-0 difference energy is at most **1e-4** of the
+    dense energy. Both paths apply the same modules to the same rows there.
+
+  The share of the step-0 difference that is one consistent offset per
+  (layer, K/V, head) is also reported.
+- **Layer-0 check (held-out stale rows).** A committed token's layer-0 K/V
+  cannot truly go stale. Both conditions must hold for K and for V:
+  - layer-0 error energy per row is at most **1%** of that in layers 1–27;
+  - layer-0 held-out FER of M2 and of M4 is at most **0.05**, or there is no
+    layer-0 error at all.
+
+  Structure found at layer 0 would mean the pipeline, not staleness.
+
+### 3. Clarifications
+
+- **Precondition.** It is confirmed in code and covered by tests:
+  - each policy has its own backend and cache, reset once per task in
+    `replay_task` and never rebuilt from dense
+    (`tests/test_replay_compounding.py` checks that the cache drifts between
+    the policy's own refreshes);
+  - the report also lists stale rows by age bucket, so refresh_256 rows of
+    age 32+ show the cache going stale on its own schedule.
+- **Repeat check (sanity check 3).** It compares each policy's sums on the
+  rerun with that same policy's sums on the first run, never one policy with
+  another.
+- **Null control.** The synthetic pipeline test plants pure-noise errors,
+  independent of c and across tasks, in one 128-dimensional cell with 1,800
+  training rows per fold. M4 fits +0.072 in-sample but scores −0.077 held
+  out (95% interval below 0), and the outcome is C. So cross-validation does
+  catch overfitting at this matrix size. A planted affine map is recovered
+  with held-out FER above 0.9.
+
 ## Results
 
 Added after the run.

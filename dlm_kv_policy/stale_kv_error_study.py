@@ -92,6 +92,20 @@ BOOTSTRAP_RESAMPLES = 10_000
 MIN_FER = 0.20
 MAX_S1_RELATIVE_ERROR = 0.25
 MIN_S2_FRACTION = 0.25
+# Amendment of 2026-10-31: the decision reads only prompt and answer rows;
+# padding is reported separately, and so is the score over all rows.
+ROW_SETS = {"prompt_and_answer": ("prompt", "answer"), "padding": ("padding",), "all": ROW_TYPES}
+DECISION_ROWS = "prompt_and_answer"
+# Amendment of 2026-10-31: pipeline checks. If either fails, the outcome is not trusted.
+# Path check: at step 0 both paths compute every row fresh, so their difference
+# is the paths themselves. Its energy per row, averaged over scored (layer, K/V)
+# as a share of the stale error energy per row, bounds how much FER a consistent
+# path offset could add.
+MAX_PATH_SHARE = 0.02
+MAX_LAYER0_PATH_DIFFERENCE = 1e-4  # step-0 layer-0 difference energy / dense energy
+# Layer-0 check on held-out stale rows.
+MAX_LAYER0_ENERGY_SHARE = 0.01  # layer-0 error energy per row / that of layers 1-27
+MAX_LAYER0_FER = 0.05  # held-out FER of M2 and M4 at layer 0
 # Sanity check 2: every stale row of one head and two layers, for the first
 # two tasks of fold 0, is saved during evaluate.
 RAW_SAMPLE_TASKS = 2
@@ -204,8 +218,19 @@ class StaleRowReplay:
         self.generation = generation
         self.top_p_logits = top_p_logits
 
-    def run(self, prompt: torch.Tensor, attention_mask: torch.Tensor, row_type: torch.Tensor, sink: Sink) -> list[int]:
-        """Replay one task and return the dense token IDs."""
+    def run(
+        self,
+        prompt: torch.Tensor,
+        attention_mask: torch.Tensor,
+        row_type: torch.Tensor,
+        sink: Sink,
+        first_step_sink: Callable[[str, int, int, torch.Tensor, torch.Tensor], None] | None = None,
+    ) -> list[int]:
+        """Replay one task and return the dense token IDs.
+
+        ``first_step_sink(policy, layer, kind, dense, cached)`` gets every valid
+        row at step 0, when both paths have just computed everything.
+        """
 
         for store in self.stores.values():
             store.reset(row_type.numel())
@@ -219,13 +244,17 @@ class StaleRowReplay:
                     last = backend.cache.layer_last_refresh[layer, 0]
                     if bool((valid & last.lt(0)).any()):
                         raise RuntimeError(f"{name}: a row at layer {layer} was never computed")
+                    pairs = ((self.dense.keys[layer], store.keys[layer]), (self.dense.values[layer], store.values[layer]))
+                    if step == 0 and first_step_sink is not None:
+                        fresh = torch.where(valid)[0]
+                        for kind, (dense_rows, cached_rows) in enumerate(pairs):
+                            first_step_sink(name, layer, kind, dense_rows[:, fresh].double(), cached_rows[:, fresh].double())
                     # Rows computed this step have last == step; the rest are stale.
                     positions = torch.where(valid & last.lt(step))[0]
                     if positions.numel() == 0:
                         continue
                     ages = step - last[positions]
                     combo = torch.bucketize(ages, edges, right=True) * len(ROW_TYPES) + row_type[positions]
-                    pairs = ((self.dense.keys[layer], store.keys[layer]), (self.dense.values[layer], store.values[layer]))
                     for kind, (dense_rows, cached_rows) in enumerate(pairs):
                         c = cached_rows[:, positions].double()
                         sink(name, layer, kind, c, dense_rows[:, positions].double() - c, combo)
@@ -380,6 +409,54 @@ def add_held_out(
     sums["subspace"][layer, kind].index_add_(1, combo, captured)
 
 
+def empty_first_step(num_layers: int, num_heads: int, head_dim: int, device: Any) -> dict[str, torch.Tensor]:
+    cell = (num_layers, len(KINDS), num_heads)
+    zeros = lambda *extra: torch.zeros(cell + extra, dtype=torch.float64, device=device)  # noqa: E731
+    return {"rows": zeros(), "difference_energy": zeros(), "dense_energy": zeros(), "difference_sum": zeros(head_dim)}
+
+
+def add_first_step(sums: dict[str, torch.Tensor], layer: int, kind: int, dense: torch.Tensor, cached: torch.Tensor) -> None:
+    """Add step-0 rows, which both paths computed fresh. dense, cached: [heads, rows, head_dim]."""
+
+    difference = dense - cached
+    sums["rows"][layer, kind] += dense.shape[1]
+    sums["difference_energy"][layer, kind] += difference.square().sum(dim=(1, 2))
+    sums["dense_energy"][layer, kind] += dense.square().sum(dim=(1, 2))
+    sums["difference_sum"][layer, kind] += difference.sum(dim=1)
+
+
+def path_check(first_step: dict[str, np.ndarray], stale_energy: np.ndarray, stale_rows: np.ndarray) -> dict[str, Any]:
+    """Can the difference between the dense and cached code paths pass for stale error?
+
+    first_step: summed step-0 sums. stale_energy, stale_rows: [layers, kinds]
+    stale error energy (summed over heads) and stale rows.
+    """
+
+    rows = first_step["rows"][..., 0]
+    path_energy = first_step["difference_energy"].sum(-1) / np.maximum(rows, 1)  # per row, all heads
+    stale_per_row = stale_energy / np.maximum(stale_rows, 1)
+    share = path_energy[SCORED_FIRST_LAYER:] / np.where(stale_per_row > 0, stale_per_row, np.nan)[SCORED_FIRST_LAYER:]
+    offset = (np.square(first_step["difference_sum"]).sum(-1) / np.maximum(first_step["rows"], 1)).sum()
+    total = first_step["difference_energy"].sum()
+    layer0 = float(first_step["difference_energy"][0].sum() / first_step["dense_energy"][0].sum())
+    mean_share = float(np.nanmean(share))
+    return {
+        "mean_share_of_stale_error": mean_share,
+        "max_share_of_stale_error": float(np.nanmax(share)),
+        "relative_difference_by_layer": (
+            first_step["difference_energy"].sum(axis=(1, 2)) / first_step["dense_energy"].sum(axis=(1, 2))
+        ).tolist(),
+        "layer0_relative_difference": layer0,
+        # Share of the step-0 difference that is one consistent offset per (layer, K/V, head).
+        "consistent_offset_fraction": float(offset / total) if total > 0 else 0.0,
+        "passed": bool(mean_share <= MAX_PATH_SHARE and layer0 <= MAX_LAYER0_PATH_DIFFERENCE),
+    }
+
+
+def row_set_combos(row_set: str) -> list[int]:
+    return [combo for combo in range(COMBOS) if ROW_TYPES[combo % len(ROW_TYPES)] in ROW_SETS[row_set]]
+
+
 # GPU steps: collect and evaluate ---------------------------------------------
 
 
@@ -420,13 +497,13 @@ class Study:
     def fold_tasks(self, fold: int) -> list[int]:
         return [index for index, task_fold in enumerate(self.folds) if task_fold == fold]
 
-    def run_task(self, replay: StaleRowReplay, index: int, sink: Sink) -> None:
+    def run_task(self, replay: StaleRowReplay, index: int, sink: Sink, first_step_sink: Callable | None = None) -> None:
         task = self.tasks[index]
         seed_everything(self.config.generation.seed + index)
         prompt, attention_mask = prepare_diffucoder_prompt_batch(self.tokenizer, [task.prompt], self.config.model.device)
         saved = json.loads((self.replay_dir / f"task_{index:03d}.json").read_text())
         row_type = row_types(prompt.shape[1], saved["dense_token_ids"], self.stop_ids, prompt.device)
-        if replay.run(prompt, attention_mask, row_type, sink) != saved["dense_token_ids"]:
+        if replay.run(prompt, attention_mask, row_type, sink, first_step_sink) != saved["dense_token_ids"]:
             raise RuntimeError(f"Task {index}: dense output differs from the earlier replay")
 
     def write_job_info(self, step: str, fold: int) -> None:
@@ -454,23 +531,46 @@ def collect(config: Any, fold: int) -> None:
     device = config.model.device
     fold_sums = {name: empty_sums(*study.shape, device) for name in POLICIES}
     task_sums = {name: empty_sums(*study.shape, device) for name in POLICIES}
+    first_step = {name: empty_first_step(*study.shape, device) for name in POLICIES}
+    decision_combos = row_set_combos(DECISION_ROWS)
     first_task_sums = None
     indices = study.fold_tasks(fold)
     for count, index in enumerate(indices):
         for sums in task_sums.values():
             for tensor in sums.values():
                 tensor.zero_()
-        study.run_task(replay, index, lambda name, *rows: add_rows(task_sums[name], *rows))
+        task_first_step = {name: empty_first_step(*study.shape, device) for name in POLICIES}
+        study.run_task(
+            replay, index,
+            lambda name, *rows: add_rows(task_sums[name], *rows),
+            lambda name, *rows: add_first_step(task_first_step[name], *rows),
+        )
         for name in POLICIES:
             for key, tensor in task_sums[name].items():
                 fold_sums[name][key] += tensor
+            for key, tensor in task_first_step[name].items():
+                first_step[name][key] += tensor
         if first_task_sums is None:
             first_task_sums = {name: {key: t.cpu() for key, t in sums.items()} for name, sums in task_sums.items()}
-        print(f"fold {fold}: task {count + 1}/{len(indices)} {study.tasks[index].task_id} collected", flush=True)
+        # The path check for this task alone, against refresh_32's stale error.
+        stale = task_sums["refresh_32"]
+        check = path_check(
+            {key: tensor.cpu().numpy() for key, tensor in task_first_step["refresh_32"].items()},
+            stale["ee"].diagonal(dim1=-2, dim2=-1).sum(-1)[..., decision_combos].sum(dim=(2, 3)).cpu().numpy(),
+            stale["rows"][:, :, 0, decision_combos].sum(-1).cpu().numpy(),
+        )
+        print(
+            f"fold {fold}: task {count + 1}/{len(indices)} {study.tasks[index].task_id} collected; "
+            f"path check: share of stale error {check['mean_share_of_stale_error']:.2e} "
+            f"(max {check['max_share_of_stale_error']:.2e}), layer-0 difference {check['layer0_relative_difference']:.2e}, "
+            f"{'passed' if check['passed'] else 'FAILED'}",
+            flush=True,
+        )
     for name, sums in fold_sums.items():
         path = study.output_dir / "sums" / name / f"fold{fold}.pt"
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({key: tensor.cpu() for key, tensor in sums.items()}, path)
+        torch.save({key: tensor.cpu() for key, tensor in first_step[name].items()}, path.with_name(f"fold{fold}_first_step.pt"))
     del fold_sums, task_sums
 
     if fold == 0:
@@ -479,6 +579,7 @@ def collect(config: Any, fold: int) -> None:
         repeat = {name: empty_sums(*study.shape, device) for name in names}
         study.run_task(study.replay(names), indices[0], lambda name, *rows: add_rows(repeat[name], *rows))
         check = {
+            # Each policy's rerun is compared with that same policy's first run.
             "task_id": study.tasks[indices[0]].task_id,
             "control_policy": CONTROL_POLICY,
             "control_stale_rows": int(repeat[CONTROL_POLICY]["rows"][:, 0, 0].sum().item()),
@@ -620,64 +721,165 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def score_row_set(held: dict[str, np.ndarray], fits: list[dict[str, np.ndarray]], combos: list[int], rng) -> dict[str, Any]:
+    """First- and second-moment scores of one policy, using only the cells in combos."""
+
+    scored = slice(SCORED_FIRST_LAYER, None)
+    rows, energy = held["rows"][..., combos], held["energy"][..., combos]
+    residual, subspace = held["residual"][..., combos], held["subspace"][..., combos]
+    task_fold = held["fold"]
+
+    # First moment. Pool heads and cells within each (layer, kind).
+    layer_energy = energy[:, scored].sum(axis=(3, 4))  # [tasks, layers, kinds]
+    layer_residual = residual[:, :, scored].sum(axis=(4, 5))  # [tasks, methods, layers, kinds]
+    per_task = equal_weight_fer(layer_energy, layer_residual)  # [tasks, methods]
+    held_out_pooled = np.mean([
+        equal_weight_fer(layer_energy[task_fold == k].sum(0), layer_residual[task_fold == k].sum(0))
+        for k in range(FOLDS)
+    ], axis=0)
+    in_sample = np.mean([
+        equal_weight_fer(
+            fold_fit["train_energy"][scored][..., combos].sum(axis=(2, 3)),
+            fold_fit["residual"][:, scored][..., combos].sum(axis=(3, 4)),
+        )
+        for fold_fit in fits
+    ], axis=0)
+    energy_weighted = 1 - layer_residual.sum(axis=(0, 2, 3)) / layer_energy.sum()
+    methods = {}
+    for m, method in enumerate(("M0",) + METHODS):
+        scores = per_task[:, m]
+        low, high = bootstrap_interval(scores, rng)
+        methods[method] = {
+            "fer_mean": float(scores.mean()),
+            "ci_low": low,
+            "ci_high": high,
+            **{f"fold{k + 1}_mean": float(scores[task_fold == k].mean()) for k in range(FOLDS)},
+            "energy_weighted_fer": float(energy_weighted[m]),
+            "in_sample_fer": float(in_sample[m]),
+            "held_out_pooled_fer": float(held_out_pooled[m]),
+        }
+
+    # Second moment. S1: per held-out (task, cell) with enough rows.
+    relative_errors = []
+    for task_index in range(len(task_fold)):
+        train_rms = fits[task_fold[task_index]]["train_rms"][scored][..., combos]
+        task_rows = rows[task_index, scored]
+        enough = (task_rows >= MIN_ROWS_FOR_S1) & (train_rms > 0)
+        task_rms = np.sqrt(energy[task_index, scored][enough] / task_rows[enough])
+        relative_errors.append(np.abs(task_rms - train_rms[enough]) / train_rms[enough])
+    relative_errors = np.concatenate(relative_errors)
+    layer_subspace = subspace[:, scored].sum(axis=(0, 3, 4))
+    second = {
+        "s1_median_relative_error": float(np.median(relative_errors)) if relative_errors.size else float("nan"),
+        "s1_task_cells": int(relative_errors.size),
+        "s2_captured_fraction": float(subspace[:, scored].sum() / energy[:, scored].sum()),
+        "s2_captured_fraction_equal_weight": float(np.mean(layer_subspace / layer_energy.sum(axis=0))),
+        "random_baseline": SUBSPACE_RANK / fits[0]["head_dim"],
+    }
+
+    # Sanity 4 and the precondition: stale rows and error energy per row and head, by age bucket.
+    ages = np.array([combo // len(ROW_TYPES) for combo in combos])
+    age_rows = np.array([rows[:, scored, :, 0][..., ages == bucket].sum() for bucket in range(len(AGE_BUCKETS))])
+    age_energy = np.array([energy[:, scored][..., ages == bucket].sum() for bucket in range(len(AGE_BUCKETS))])
+    heads = rows.shape[3]
+    energy_per_row = age_energy / np.maximum(age_rows * heads, 1)
+    present = age_rows > 0
+
+    # Layer-0 check: no real staleness there, so tiny error and no structure.
+    layer0 = {}
+    for kind, kind_name in enumerate(KINDS):
+        layer0_energy = energy[:, 0, kind].sum()
+        layer0_per_row = layer0_energy / max(rows[:, 0, kind, 0].sum(), 1)
+        deeper_per_row = energy[:, scored, kind].sum() / max(rows[:, scored, kind, 0].sum(), 1)
+        layer0[kind_name] = {
+            "energy_share": float(layer0_per_row / deeper_per_row) if deeper_per_row > 0 else float("nan"),
+            **{
+                f"{method}_fer": float(1 - residual[:, m, 0, kind].sum() / layer0_energy) if layer0_energy > 0 else None
+                for m, method in ((2, "M2"), (4, "M4"))
+            },
+        }
+    layer0_passed = all(
+        entry["energy_share"] <= MAX_LAYER0_ENERGY_SHARE
+        and all(entry[key] is None or entry[key] <= MAX_LAYER0_FER for key in ("M2_fer", "M4_fer"))
+        for entry in layer0.values()
+    )
+
+    m4 = methods["M4"]
+    if m4["ci_low"] > 0 and m4["fer_mean"] >= MIN_FER and all(m4[f"fold{k + 1}_mean"] > 0 for k in range(FOLDS)):
+        first_moment = "systematic"
+    elif m4["ci_low"] > 0:
+        first_moment = "weak"
+    else:
+        first_moment = "not systematic"
+    return {
+        "methods": methods,
+        "second_moment": second,
+        "first_moment": first_moment,
+        "second_moment_systematic": bool(
+            second["s1_median_relative_error"] <= MAX_S1_RELATIVE_ERROR and second["s2_captured_fraction"] >= MIN_S2_FRACTION
+        ),
+        "stale_rows_by_age_bucket": dict(zip(AGE_BUCKETS, age_rows.tolist())),
+        "error_energy_by_age_bucket": dict(zip(AGE_BUCKETS, energy_per_row.tolist())),
+        "error_energy_increases_with_age": bool(np.all(np.diff(energy_per_row[present]) >= 0)),
+        "layer0": layer0,
+        "layer0_passed": bool(layer0_passed),
+    }
+
+
 def report(output_dir: Path, task_count: int) -> None:
     rng = np.random.default_rng(0)
-    scored = slice(SCORED_FIRST_LAYER, None)
     method_names = ("M0",) + METHODS
     results, breakdown, second_moment, policy_reports = [], [], [], {}
     for name in POLICIES:
         tasks = [np.load(path) for path in sorted((output_dir / "eval" / name).glob("task_*.npz"))]
         if len(tasks) != task_count:
             raise SystemExit(f"{name}: {len(tasks)} evaluated tasks, expected {task_count}. Finish evaluate first.")
-        fits = [np.load(output_dir / "fit" / name / f"fold{k}.npz") for k in range(FOLDS)]
-        task_fold = np.array([int(task["fold"]) for task in tasks])
-        rows = np.stack([task["rows"] for task in tasks])  # [tasks, layers, kinds, heads, combos]
-        energy = np.stack([task["energy"] for task in tasks])
-        # M0's residual is the error itself.
-        residual = np.stack([np.concatenate([task["energy"][None], task["residual"]]) for task in tasks])
-        subspace = np.stack([task["subspace"] for task in tasks])
-        head_dim = fits[0]["m2_shift"].shape[-1]
+        held = {
+            "fold": np.array([int(task["fold"]) for task in tasks]),
+            "rows": np.stack([task["rows"] for task in tasks]),  # [tasks, layers, kinds, heads, combos]
+            "energy": np.stack([task["energy"] for task in tasks]),
+            # M0's residual is the error itself.
+            "residual": np.stack([np.concatenate([task["energy"][None], task["residual"]]) for task in tasks]),
+            "subspace": np.stack([task["subspace"] for task in tasks]),
+        }
+        fits = []
+        for k in range(FOLDS):
+            with np.load(output_dir / "fit" / name / f"fold{k}.npz") as saved:
+                fits.append({
+                    "train_energy": saved["train_energy"],
+                    "train_rms": saved["train_rms"],
+                    "residual": np.concatenate([saved["train_energy"][None], saved["in_sample_residual"]]),
+                    "head_dim": saved["m2_shift"].shape[-1],
+                })
+        head_dim = fits[0]["head_dim"]
         parameters = {"M0": 0, "M1": 1, "M2": head_dim, "M3": 2 * head_dim, "M4": head_dim * head_dim + head_dim}
 
-        # First moment. Pool heads and cells within each (layer, kind).
-        layer_energy = energy[:, scored].sum(axis=(3, 4))  # [tasks, layers, kinds]
-        layer_residual = residual[:, :, scored].sum(axis=(4, 5))  # [tasks, methods, layers, kinds]
-        per_task = equal_weight_fer(layer_energy, layer_residual)  # [tasks, methods]
-        held_out_pooled = np.mean([
-            equal_weight_fer(layer_energy[task_fold == k].sum(0), layer_residual[task_fold == k].sum(0))
-            for k in range(FOLDS)
-        ], axis=0)
-        in_sample = np.mean([
-            equal_weight_fer(
-                fold_fit["train_energy"][scored].sum(axis=(2, 3)),
-                np.concatenate([fold_fit["train_energy"][None], fold_fit["in_sample_residual"]])[:, scored].sum(axis=(3, 4)),
+        policy_reports[name] = {}
+        for row_set in ROW_SETS:
+            scores = score_row_set(held, fits, row_set_combos(row_set), rng)
+            policy_reports[name][row_set] = scores
+            for method, row in scores["methods"].items():
+                results.append({"policy": name, "rows": row_set, "method": method, "parameters_per_cell": parameters[method], **row})
+            second_moment.append({"policy": name, "rows": row_set, **scores["second_moment"]})
+
+        # Path check: step-0 differences against this policy's held-out stale error on the decision rows.
+        first_step_paths = [output_dir / "sums" / name / f"fold{k}_first_step.pt" for k in range(FOLDS)]
+        if all(path.is_file() for path in first_step_paths):
+            parts = [torch.load(path, weights_only=True) for path in first_step_paths]
+            first_step = {key: sum(part[key] for part in parts).numpy() for key in parts[0]}
+            combos = row_set_combos(DECISION_ROWS)
+            policy_reports[name]["path_check"] = path_check(
+                first_step,
+                held["energy"][..., combos].sum(axis=(0, 3, 4)),
+                held["rows"][:, :, :, 0][..., combos].sum(axis=(0, 3)),
             )
-            for fold_fit in fits
-        ], axis=0)
-        energy_weighted = 1 - layer_residual.sum(axis=(0, 2, 3)) / layer_energy.sum()
-        policy_rows = {}
-        for m, method in enumerate(method_names):
-            scores = per_task[:, m]
-            low, high = bootstrap_interval(scores, rng)
-            row = {
-                "policy": name,
-                "method": method,
-                "parameters_per_cell": parameters[method],
-                "fer_mean": float(scores.mean()),
-                "ci_low": low,
-                "ci_high": high,
-                **{f"fold{k + 1}_mean": float(scores[task_fold == k].mean()) for k in range(FOLDS)},
-                "energy_weighted_fer": float(energy_weighted[m]),
-                "in_sample_fer": float(in_sample[m]),
-                "held_out_pooled_fer": float(held_out_pooled[m]),
-            }
-            results.append(row)
-            policy_rows[method] = row
+        else:
+            policy_reports[name]["path_check"] = None
 
         # Breakdown per cell, pooled over held-out tasks and heads; includes layer 0.
-        cell_energy = energy.sum(axis=(0, 3))  # [layers, kinds, combos]
-        cell_residual = residual.sum(axis=(0, 4))  # [methods, layers, kinds, combos]
-        cell_rows = rows[:, :, :, 0].sum(axis=0)
+        cell_energy = held["energy"].sum(axis=(0, 3))  # [layers, kinds, combos]
+        cell_residual = held["residual"].sum(axis=(0, 4))  # [methods, layers, kinds, combos]
+        cell_rows = held["rows"][:, :, :, 0].sum(axis=0)
         for layer, kind, combo in np.ndindex(*cell_energy.shape):
             for m, method in enumerate(method_names):
                 total = cell_energy[layer, kind, combo]
@@ -692,69 +894,29 @@ def report(output_dir: Path, task_count: int) -> None:
                     "n_rows": int(cell_rows[layer, kind, combo]),
                 })
 
-        # Second moment. S1: per held-out (task, cell) with enough rows.
-        relative_errors = []
-        for task_index, task in enumerate(tasks):
-            train_rms = fits[int(task["fold"])]["train_rms"][scored]
-            task_rows = rows[task_index, scored]
-            enough = (task_rows >= MIN_ROWS_FOR_S1) & (train_rms > 0)
-            task_rms = np.sqrt(energy[task_index, scored][enough] / task_rows[enough])
-            relative_errors.append(np.abs(task_rms - train_rms[enough]) / train_rms[enough])
-        relative_errors = np.concatenate(relative_errors)
-        layer_subspace = subspace[:, scored].sum(axis=(0, 3, 4))
-        second = {
-            "policy": name,
-            "s1_median_relative_error": float(np.median(relative_errors)) if relative_errors.size else float("nan"),
-            "s1_task_cells": int(relative_errors.size),
-            "s2_captured_fraction": float(subspace[:, scored].sum() / energy[:, scored].sum()),
-            "s2_captured_fraction_equal_weight": float(np.mean(layer_subspace / layer_energy.sum(axis=0))),
-            "random_baseline": SUBSPACE_RANK / head_dim,
-        }
-        second_moment.append(second)
-
-        # Sanity 4: mean error energy per row and head, by age bucket.
-        by_age = energy[:, scored].reshape(*energy[:, scored].shape[:-1], len(AGE_BUCKETS), len(ROW_TYPES))
-        age_rows = rows[:, scored].reshape(by_age.shape)
-        age_energy = by_age.sum(axis=(0, 1, 2, 3, 5)) / np.maximum(age_rows.sum(axis=(0, 1, 2, 3, 5)), 1)
-        present = age_rows.sum(axis=(0, 1, 2, 3, 5)) > 0
-        increasing = bool(np.all(np.diff(age_energy[present]) >= 0))
-
-        m4 = policy_rows["M4"]
-        if m4["ci_low"] > 0 and m4["fer_mean"] >= MIN_FER and all(m4[f"fold{k + 1}_mean"] > 0 for k in range(FOLDS)):
-            first_moment = "systematic"
-        elif m4["ci_low"] > 0:
-            first_moment = "weak"
-        else:
-            first_moment = "not systematic"
-        policy_reports[name] = {
-            "first_moment": first_moment,
-            "second_moment_systematic": bool(
-                second["s1_median_relative_error"] <= MAX_S1_RELATIVE_ERROR
-                and second["s2_captured_fraction"] >= MIN_S2_FRACTION
-            ),
-            "m4_fer": m4["fer_mean"],
-            "m4_ci": [m4["ci_low"], m4["ci_high"]],
-            "m4_in_sample_fer": m4["in_sample_fer"],
-            "m4_held_out_pooled_fer": m4["held_out_pooled_fer"],
-            "error_energy_by_age_bucket": dict(zip(AGE_BUCKETS, age_energy.tolist())),
-            "error_energy_increases_with_age": increasing,
-            "stale_row_layer_pairs": int(rows[:, :, 0, 0].sum()),
-            **{key: value for key, value in second.items() if key != "policy"},
-        }
-
-    first = all(policy_reports[name]["first_moment"] == "systematic" for name in DECISION_POLICIES)
-    second = all(policy_reports[name]["second_moment_systematic"] for name in DECISION_POLICIES)
+    decision = {name: policy_reports[name][DECISION_ROWS] for name in DECISION_POLICIES}
+    first = all(scores["first_moment"] == "systematic" for scores in decision.values())
+    second = all(scores["second_moment_systematic"] for scores in decision.values())
     outcome = "A: first-moment systematic" if first else "B: second-moment only" if second else "C: neither"
     repeat_path = output_dir / "checks" / "repeat_and_control.json"
+    control_and_repeat = json.loads(repeat_path.read_text()) if repeat_path.is_file() else None
+    raw_sample = raw_sample_check(output_dir)
+    pipeline = {
+        "path_check": all(policy_reports[name]["path_check"] and policy_reports[name]["path_check"]["passed"] for name in DECISION_POLICIES),
+        "layer0": all(scores["layer0_passed"] for scores in decision.values()),
+        "control_has_no_stale_rows": bool(control_and_repeat and control_and_repeat["control_stale_rows"] == 0),
+        "repeat_sums_identical": bool(control_and_repeat and all(control_and_repeat["repeat_sums_identical"].values())),
+        "raw_sample": raw_sample["passed"],
+    }
+    trusted = all(pipeline.values())
     summary = {
-        "outcome": outcome,
+        "outcome": outcome if trusted else f"UNTRUSTED (a pipeline check failed): {outcome}",
+        "pipeline_checks": pipeline,
         "first_moment_systematic": first,
         "second_moment_systematic": second,
         "decision_policies": DECISION_POLICIES,
-        "sanity_checks": {
-            "control_and_repeat": json.loads(repeat_path.read_text()) if repeat_path.is_file() else None,
-            "raw_sample": raw_sample_check(output_dir),
-        },
+        "decision_rows": ROW_SETS[DECISION_ROWS],
+        "sanity_checks": {"control_and_repeat": control_and_repeat, "raw_sample": raw_sample},
         "policies": policy_reports,
     }
     write_csv(output_dir / "stale_kv_error_results.csv", results)
@@ -762,21 +924,24 @@ def report(output_dir: Path, task_count: int) -> None:
     write_csv(output_dir / "stale_kv_error_second_moment.csv", second_moment)
     (output_dir / "report.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    print(f"{'policy':<12} {'method':<6} {'FER':>7} {'95% CI':>17} {'in-sample':>9} {'pooled':>7} {'energy-wt':>9}")
+    print(f"{'policy':<12} {'rows':<18} {'method':<6} {'FER':>7} {'95% CI':>17} {'in-sample':>9} {'pooled':>7} {'energy-wt':>9}")
     for row in results:
         print(
-            f"{row['policy']:<12} {row['method']:<6} {row['fer_mean']:>7.3f} "
+            f"{row['policy']:<12} {row['rows']:<18} {row['method']:<6} {row['fer_mean']:>7.3f} "
             f"[{row['ci_low']:>7.3f}, {row['ci_high']:>6.3f}] {row['in_sample_fer']:>9.3f} "
             f"{row['held_out_pooled_fer']:>7.3f} {row['energy_weighted_fer']:>9.3f}"
         )
-    for name, policy_report in policy_reports.items():
+    for name in POLICIES:
+        scores = policy_reports[name][DECISION_ROWS]
         print(
-            f"{name}: first moment {policy_report['first_moment']}; S1 {policy_report['s1_median_relative_error']:.3f}, "
-            f"S2 {policy_report['s2_captured_fraction']:.3f} (random {policy_report['random_baseline']:.3f}); "
-            f"error energy rises with age: {policy_report['error_energy_increases_with_age']}"
+            f"{name} ({DECISION_ROWS}): first moment {scores['first_moment']}; "
+            f"S1 {scores['second_moment']['s1_median_relative_error']:.3f}, "
+            f"S2 {scores['second_moment']['s2_captured_fraction']:.3f} "
+            f"(random {scores['second_moment']['random_baseline']:.3f}); "
+            f"error energy rises with age: {scores['error_energy_increases_with_age']}; layer 0 passed: {scores['layer0_passed']}"
         )
-    print(f"Sanity checks: {json.dumps(summary['sanity_checks'])}")
-    print(f"Outcome: {outcome}")
+    print(f"Pipeline checks: {pipeline}")
+    print(f"Outcome: {summary['outcome']}")
 
 
 def main() -> None:
