@@ -282,4 +282,86 @@ untrusted**, and so it does if sanity check 1, 2 or 3 fails.
 
 ## Results
 
-Added after the run.
+Run on 2026-11-01, A100 80GB, Slurm jobs 22230649–22230658. Outputs are in
+`results/dlm_kv_policy/diffucoder7b_output_variance_greedy_v1/NVIDIA_A100-SXM4-80GB/stale_kv_error_study/`.
+
+### Outcome as registered
+
+**UNTRUSTED (a pipeline check failed): B, second-moment only.**
+
+The layer-0 check failed on refresh_32 and refresh_256, so by the
+amendment's rule the outcome is not trusted. The other pipeline checks and
+sanity checks passed. Even if every check had passed, the outcome would be B:
+refresh_32 is only weak on the first moment.
+
+### First moment (prompt and answer rows, held out)
+
+| Policy | M1 | M2 | M3 | M4 FER [95% CI] | M4 fold means | M4 energy-weighted | M4 in-sample / held-out pooled |
+|---|---|---|---|---|---|---|---|
+| refresh_4 | 0.001 | 0.001 | 0.003 | 0.022 [0.019, 0.024] | 0.023, 0.023, 0.022, 0.019 | 0.008 | 0.026 / 0.019 |
+| refresh_32 | 0.008 | 0.011 | 0.028 | 0.145 [0.133, 0.157] | 0.160, 0.146, 0.145, 0.131 | 0.068 | 0.167 / 0.132 |
+| refresh_256 | 0.046 | 0.074 | 0.147 | 0.409 [0.389, 0.429] | 0.424, 0.412, 0.411, 0.390 | 0.259 | 0.454 / 0.388 |
+
+- refresh_32 is **weak**: the interval is above 0, but the estimate is below
+  0.20. refresh_256 is **systematic**. The rule needs both, so the first
+  moment is not systematic.
+- Most of the predictable part needs the full 128×128 map. One scale or a
+  mean shift removes almost nothing.
+- Energy-weighted FER is about half the equal-weight score: the
+  highest-energy layers are the least predictable.
+- Answer rows are much more predictable than prompt rows. For refresh_256 at
+  age 32+, M4 removes 0.50–0.78 of answer-row K error but 0.14–0.64 of
+  prompt-row K error. Predictability falls with depth in both.
+
+### Second moment (prompt and answer rows)
+
+| Policy | S1 median relative error | S2 captured fraction (random 0.0625) |
+|---|---|---|
+| refresh_4 | 0.124 | 0.317 |
+| refresh_32 | 0.126 | 0.358 |
+| refresh_256 | 0.111 | 0.456 |
+
+Both decision policies meet S1 ≤ 0.25 and S2 ≥ 0.25: **second-moment
+systematic**. A cell's error size is predictable to about 12%, and its top-8
+directions hold 36–46% of the held-out error energy, 6–7× a random subspace.
+
+### Padding and all rows (reported, not used)
+
+M4 FER on padding is 0.886 (refresh_32) and 0.966 (refresh_256); on all
+rows it is 0.518 and 0.707. On the readout as first registered, padding alone
+would have made both policies first-moment systematic. Amendment 1 is what
+kept that out of the decision.
+
+### Checks
+
+| Check | Result |
+|---|---|
+| Path check (step 0) | Passed. The two paths are bitwise identical at every layer of every task. |
+| Layer 0: energy share | Passed. Layer-0 error per row is about 1e-4 of layers 1–27 for K and 3e-7 for V. |
+| Layer 0: FER | **Failed.** M2 is at most 0.046, but M4 removes 0.106 (K) and 0.064 (V) of layer-0 error on refresh_32, and 0.483 and 0.592 on refresh_256. The limit was 0.05. |
+| 1. Control has no stale rows | Passed (0 rows) |
+| 2. Raw sample | Passed (max relative error 2.5e-9) |
+| 3. Repeat gives identical sums | Passed for each policy |
+| 4. Error rises with age | Yes, for every policy |
+
+### What the layer-0 failure probably means (interpretation, not tested)
+
+- **Only answer rows have layer-0 error.** Prompt rows have none: they are
+  last computed in the full forward at step 0, the same shape as dense.
+  Answer rows are last computed in a forward over only a few rows, so their
+  bf16 matrix products round differently from dense.
+- **Why M4 can predict it.** At layer 0, c is the token's own projection, so
+  c identifies the token. Rounding for a given token and forward shape is
+  deterministic, so a full affine map can learn part of it. M2, the
+  consistent offset the check was designed to catch, finds almost nothing.
+- **This is numerics, not a bug.** It is a real difference between how a
+  cache and dense compute a row, but it has nothing to do with staleness.
+- **Probably too small to matter.** At layer 0 it is about 1e-4 of the error
+  energy, so it cannot account for the deeper-layer FER there. The study has
+  not measured how this rounding grows through deeper layers, though. Answer
+  rows are both the rows that carry it and the most predictable rows, so it
+  cannot yet be ruled out.
+
+The check as registered assumed rounding is unpredictable noise. That
+assumption was wrong: rounding is a deterministic function of the token, so
+a model given c can learn part of it.
