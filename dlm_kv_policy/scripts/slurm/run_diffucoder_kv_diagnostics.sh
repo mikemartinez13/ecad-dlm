@@ -27,17 +27,19 @@
 #
 # Timing comparisons (decoding_oracles, autoregressive_reference) must run on
 # the same GPU type; pin it with --constraint. So must every step of
-# stale_kv_error_study, which reads the forced-trajectory replay of that type.
+# stale_kv_error_study and stale_kv_correction_pilot, which read the
+# forced-trajectory replay of that type.
 
 set -euo pipefail
 
 PROGRAM="${1:-}"
 shift || true
 case "${PROGRAM}" in
-    output_variance_study|forced_trajectory_replay|decoding_oracles|autoregressive_reference|stale_kv_error_study) ;;
+    output_variance_study|forced_trajectory_replay|decoding_oracles|autoregressive_reference|stale_kv_error_study|stale_kv_correction_pilot) ;;
     *)
         echo "First argument must be output_variance_study, forced_trajectory_replay," \
-             "decoding_oracles, autoregressive_reference or stale_kv_error_study" >&2
+             "decoding_oracles, autoregressive_reference, stale_kv_error_study" \
+             "or stale_kv_correction_pilot" >&2
         exit 2
         ;;
 esac

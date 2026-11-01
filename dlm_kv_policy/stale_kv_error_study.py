@@ -31,6 +31,13 @@ Four steps. Folds split the tasks, balanced between HumanEval+ and MBPP+:
                       and saves one small file of held-out sums per task.
   report              Writes the CSVs and the decision. No model.
 
+Amendment 2 adds a rounding check, run after the registered result:
+
+  rounding --fold K   GPU. Measures the rounding-only error of rows each
+                      policy recomputes in partial forwards.
+  rounding-check      Asks whether the registered classification survives the
+                      worst-case contribution of that rounding. No model.
+
 Usage (from the repository root; collect and evaluate inside a GPU allocation):
 
     python -m dlm_kv_policy.stale_kv_error_study collect \\
@@ -44,6 +51,7 @@ import csv
 import json
 import random
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Any, Callable
 
@@ -63,6 +71,8 @@ from .dense_diffucoder_baseline import DenseDiffuCoderBaseline
 from .denoising_token_state import DenoisingTokenCategory
 from .diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from .diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
+from .dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
+from .fixed_token_refresh_policy import TokenRefreshDecision
 from .forced_trajectory_replay import load_top_p_logits, replay_task
 from .kv_policy_experiment_config import load_kv_policy_experiment_config
 
@@ -112,6 +122,13 @@ RAW_SAMPLE_TASKS = 2
 RAW_SAMPLE_POLICY = "refresh_32"
 RAW_SAMPLE_HEAD = 0
 RAW_SAMPLE_MAX_RELATIVE_ERROR = 1e-4
+# Amendment 2 (2026-11-01, after the registered result): the rounding check.
+# At every probe step, a stale-free cache is built with one full forward, and
+# the rows each policy recomputed that step are recomputed again in the same
+# partial forward, reading every other row from that cache. The difference
+# from dense is rounding alone. Probe steps are 1, 9, 17, ...
+ROUNDING_PROBE_EVERY = 8
+ROUNDING_PROBE_OFFSET = 1
 
 
 def assign_folds(task_ids: list[str]) -> list[int]:
@@ -264,6 +281,90 @@ class StaleRowReplay:
             on_step=on_step,
         )
         return result["dense_token_ids"]
+
+
+class RecomputeRows:
+    """A policy that recomputes exactly the given rows, at every layer."""
+
+    def __init__(self, active: torch.Tensor) -> None:
+        self.active = active
+
+    def validate(self) -> None:
+        pass
+
+    def decide(self, *, states: torch.Tensor, **_: Any) -> TokenRefreshDecision:
+        depth = torch.ones_like(states, dtype=torch.long)
+        return TokenRefreshDecision(active=self.active, refresh_depth=depth, reasons={"probe": int(self.active.sum())})
+
+
+def empty_rounding(num_layers: int, num_heads: int, device: Any) -> dict[str, torch.Tensor]:
+    cell = (num_layers, len(KINDS))
+    return {
+        "rows": torch.zeros(cell + (len(ROW_TYPES),), dtype=torch.float64, device=device),
+        "energy": torch.zeros(cell + (num_heads, len(ROW_TYPES)), dtype=torch.float64, device=device),
+    }
+
+
+def rounding_probe(
+    replay: StaleRowReplay,
+    probe: DiffuCoderActiveTokenKVBackend,
+    prompt: torch.Tensor,
+    attention_mask: torch.Tensor,
+    row_type: torch.Tensor,
+    sums: dict[str, dict[str, torch.Tensor]],
+) -> tuple[list[int], bool]:
+    """Replay one task; at probe steps, add each policy's rounding-only error to sums.
+
+    Only committed rows are measured, since only they go stale. Returns the
+    dense token IDs and whether every stale-free cache matched dense exactly.
+    """
+
+    generation = replay.generation
+    _, model_attention_mask, position_ids = replay.sampler._attention_inputs(prompt, attention_mask, generation.gen_length)
+    mask_token_id = int(replay.model.config.mask_token_id)
+    probe_store = PreRopeKV(probe)
+    for store in replay.stores.values():
+        store.reset(row_type.numel())
+    exact = True
+
+    def on_step(step: int, x: torch.Tensor, state: Any) -> None:
+        nonlocal exact
+        if step % ROUNDING_PROBE_EVERY != ROUNDING_PROBE_OFFSET:
+            return
+        valid = state.classify(x, step)[0].ne(int(DenoisingTokenCategory.PAD))
+        committed = valid & row_type.ne(ROW_TYPES.index("prompt")) & x[0].ne(mask_token_id)
+        inputs = dict(
+            input_ids=x, attention_mask=model_attention_mask, position_ids=position_ids,
+            state=state, step=step, total_steps=generation.steps,
+        )
+        for name, backend in replay.backends.items():
+            recomputed = valid & backend.cache.layer_last_refresh[0, 0].eq(step)
+            rows = torch.where(recomputed & committed)[0]
+            # A full refresh has no partial forward, so no rounding to measure.
+            if rows.numel() == 0 or bool(recomputed.eq(valid).all()):
+                continue
+            probe.set_policy(DKVDecodeRefreshPolicy(cache_reloading_step=1))
+            probe.start_generation(x.shape[1])
+            probe_store.reset(x.shape[1])
+            probe.forward_mask_logits(**inputs)
+            for layer in range(probe.num_layers):
+                exact &= torch.equal(probe_store.keys[layer][:, valid], replay.dense.keys[layer][:, valid])
+                exact &= torch.equal(probe_store.values[layer][:, valid], replay.dense.values[layer][:, valid])
+            probe.set_policy(RecomputeRows(recomputed[None]))
+            probe.forward_mask_logits(**inputs)
+            types = row_type[rows]
+            for layer in range(probe.num_layers):
+                pairs = ((probe_store.keys[layer], replay.dense.keys[layer]), (probe_store.values[layer], replay.dense.values[layer]))
+                for kind, (probed, dense) in enumerate(pairs):
+                    difference = (probed[:, rows] - dense[:, rows]).double()
+                    sums[name]["rows"][layer, kind].index_add_(0, types, torch.ones_like(types, dtype=torch.float64))
+                    sums[name]["energy"][layer, kind].index_add_(1, types, difference.square().sum(-1))
+
+    result = replay_task(
+        replay.model, replay.sampler, replay.backends, prompt, attention_mask, generation, replay.top_p_logits,
+        on_step=on_step,
+    )
+    return result["dense_token_ids"], exact
 
 
 # Running sums, fits and held-out sums -----------------------------------------
@@ -497,12 +598,19 @@ class Study:
     def fold_tasks(self, fold: int) -> list[int]:
         return [index for index, task_fold in enumerate(self.folds) if task_fold == fold]
 
-    def run_task(self, replay: StaleRowReplay, index: int, sink: Sink, first_step_sink: Callable | None = None) -> None:
-        task = self.tasks[index]
+    def task_inputs(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+        """Seeds the task and returns its prompt, attention mask, row types and saved replay."""
+
         seed_everything(self.config.generation.seed + index)
-        prompt, attention_mask = prepare_diffucoder_prompt_batch(self.tokenizer, [task.prompt], self.config.model.device)
+        prompt, attention_mask = prepare_diffucoder_prompt_batch(
+            self.tokenizer, [self.tasks[index].prompt], self.config.model.device
+        )
         saved = json.loads((self.replay_dir / f"task_{index:03d}.json").read_text())
         row_type = row_types(prompt.shape[1], saved["dense_token_ids"], self.stop_ids, prompt.device)
+        return prompt, attention_mask, row_type, saved
+
+    def run_task(self, replay: StaleRowReplay, index: int, sink: Sink, first_step_sink: Callable | None = None) -> None:
+        prompt, attention_mask, row_type, saved = self.task_inputs(index)
         if replay.run(prompt, attention_mask, row_type, sink, first_step_sink) != saved["dense_token_ids"]:
             raise RuntimeError(f"Task {index}: dense output differs from the earlier replay")
 
@@ -634,6 +742,37 @@ def evaluate(config: Any, fold: int) -> None:
         print(f"fold {fold}: task {count + 1}/{len(indices)} {study.tasks[index].task_id} evaluated", flush=True)
 
 
+def rounding(config: Any, fold: int) -> None:
+    """Amendment 2: rounding-only error of the rows each policy recomputes in partial forwards."""
+
+    study = Study(config)
+    study.write_job_info("rounding", fold)
+    replay = study.replay(POLICIES)
+    probe = DiffuCoderActiveTokenKVBackend(study.model, DKVDecodeRefreshPolicy(cache_reloading_step=1))
+    num_layers, num_heads, _ = study.shape
+    sums = {name: empty_rounding(num_layers, num_heads, config.model.device) for name in POLICIES}
+    exact = True
+    indices = study.fold_tasks(fold)
+    for count, index in enumerate(indices):
+        prompt, attention_mask, row_type, saved = study.task_inputs(index)
+        dense_ids, task_exact = rounding_probe(replay, probe, prompt, attention_mask, row_type, sums)
+        if dense_ids != saved["dense_token_ids"]:
+            raise RuntimeError(f"Task {index}: dense output differs from the earlier replay")
+        exact &= task_exact
+        answer_rows = int(sums["refresh_256"]["rows"][0, 0, ROW_TYPES.index("answer")].item())
+        print(
+            f"fold {fold}: task {count + 1}/{len(indices)} {study.tasks[index].task_id} probed; "
+            f"stale-free cache equals dense: {task_exact}; refresh_256 answer rows so far {answer_rows}",
+            flush=True,
+        )
+    for name, policy_sums in sums.items():
+        path = study.output_dir / "rounding" / name / f"fold{fold}.pt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({key: tensor.cpu() for key, tensor in policy_sums.items()}, path)
+    path = study.output_dir / "rounding" / f"fold{fold}.json"
+    path.write_text(json.dumps({"stale_free_cache_equals_dense": exact}), encoding="utf-8")
+
+
 # CPU steps: fit and report ----------------------------------------------------
 
 
@@ -721,6 +860,14 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def first_moment_class(m4: dict[str, float]) -> str:
+    """The registered first-moment rule, applied to M4's held-out scores."""
+
+    if m4["ci_low"] > 0 and m4["fer_mean"] >= MIN_FER and all(m4[f"fold{k + 1}_mean"] > 0 for k in range(FOLDS)):
+        return "systematic"
+    return "weak" if m4["ci_low"] > 0 else "not systematic"
+
+
 def score_row_set(held: dict[str, np.ndarray], fits: list[dict[str, np.ndarray]], combos: list[int], rng) -> dict[str, Any]:
     """First- and second-moment scores of one policy, using only the cells in combos."""
 
@@ -804,17 +951,10 @@ def score_row_set(held: dict[str, np.ndarray], fits: list[dict[str, np.ndarray]]
         for entry in layer0.values()
     )
 
-    m4 = methods["M4"]
-    if m4["ci_low"] > 0 and m4["fer_mean"] >= MIN_FER and all(m4[f"fold{k + 1}_mean"] > 0 for k in range(FOLDS)):
-        first_moment = "systematic"
-    elif m4["ci_low"] > 0:
-        first_moment = "weak"
-    else:
-        first_moment = "not systematic"
     return {
         "methods": methods,
         "second_moment": second,
-        "first_moment": first_moment,
+        "first_moment": first_moment_class(methods["M4"]),
         "second_moment_systematic": bool(
             second["s1_median_relative_error"] <= MAX_S1_RELATIVE_ERROR and second["s2_captured_fraction"] >= MIN_S2_FRACTION
         ),
@@ -826,31 +966,73 @@ def score_row_set(held: dict[str, np.ndarray], fits: list[dict[str, np.ndarray]]
     }
 
 
+def by_age_bucket(held: dict[str, np.ndarray], combos: list[int], rng) -> list[dict[str, Any]]:
+    """Held-out FER of every method within each age bucket, scored like the primary score."""
+
+    scored = slice(SCORED_FIRST_LAYER, None)
+    rows = []
+    for bucket, bucket_name in enumerate(AGE_BUCKETS):
+        cells = [combo for combo in combos if combo // len(ROW_TYPES) == bucket]
+        layer_energy = held["energy"][:, scored][..., cells].sum(axis=(3, 4))
+        layer_residual = held["residual"][:, :, scored][..., cells].sum(axis=(4, 5))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # tasks with no rows of this age
+            per_task = equal_weight_fer(layer_energy, layer_residual)
+        present = np.isfinite(per_task[:, 0])
+        stale_rows = int(held["rows"][:, scored, :, 0][..., cells].sum())
+        for m, method in enumerate(("M0",) + METHODS):
+            scores = per_task[present, m]
+            low, high = bootstrap_interval(scores, rng) if scores.size else (float("nan"), float("nan"))
+            total = layer_energy.sum()
+            rows.append({
+                "age_bucket": bucket_name,
+                "method": method,
+                "tasks": int(scores.size),
+                "fer_mean": float(scores.mean()) if scores.size else float("nan"),
+                "ci_low": low,
+                "ci_high": high,
+                "energy_weighted_fer": float(1 - layer_residual[:, m].sum() / total) if total > 0 else float("nan"),
+                "stale_row_layer_pairs": stale_rows,
+            })
+    return rows
+
+
+def load_held_out(output_dir: Path, name: str, task_count: int) -> dict[str, np.ndarray]:
+    tasks = [np.load(path) for path in sorted((output_dir / "eval" / name).glob("task_*.npz"))]
+    if len(tasks) != task_count:
+        raise SystemExit(f"{name}: {len(tasks)} evaluated tasks, expected {task_count}. Finish evaluate first.")
+    return {
+        "fold": np.array([int(task["fold"]) for task in tasks]),
+        "rows": np.stack([task["rows"] for task in tasks]),  # [tasks, layers, kinds, heads, combos]
+        "energy": np.stack([task["energy"] for task in tasks]),
+        # M0's residual is the error itself.
+        "residual": np.stack([np.concatenate([task["energy"][None], task["residual"]]) for task in tasks]),
+        "subspace": np.stack([task["subspace"] for task in tasks]),
+    }
+
+
+def load_fits(output_dir: Path, name: str) -> list[dict[str, Any]]:
+    fits = []
+    for k in range(FOLDS):
+        with np.load(output_dir / "fit" / name / f"fold{k}.npz") as saved:
+            fits.append({
+                "train_energy": saved["train_energy"],
+                "train_rms": saved["train_rms"],
+                "residual": np.concatenate([saved["train_energy"][None], saved["in_sample_residual"]]),
+                "head_dim": saved["m2_shift"].shape[-1],
+            })
+    return fits
+
+
 def report(output_dir: Path, task_count: int) -> None:
     rng = np.random.default_rng(0)
+    # Added after the registered result; its own generator leaves the registered numbers unchanged.
+    age_rng = np.random.default_rng(0)
     method_names = ("M0",) + METHODS
-    results, breakdown, second_moment, policy_reports = [], [], [], {}
+    results, breakdown, second_moment, age_rows, policy_reports = [], [], [], [], {}
     for name in POLICIES:
-        tasks = [np.load(path) for path in sorted((output_dir / "eval" / name).glob("task_*.npz"))]
-        if len(tasks) != task_count:
-            raise SystemExit(f"{name}: {len(tasks)} evaluated tasks, expected {task_count}. Finish evaluate first.")
-        held = {
-            "fold": np.array([int(task["fold"]) for task in tasks]),
-            "rows": np.stack([task["rows"] for task in tasks]),  # [tasks, layers, kinds, heads, combos]
-            "energy": np.stack([task["energy"] for task in tasks]),
-            # M0's residual is the error itself.
-            "residual": np.stack([np.concatenate([task["energy"][None], task["residual"]]) for task in tasks]),
-            "subspace": np.stack([task["subspace"] for task in tasks]),
-        }
-        fits = []
-        for k in range(FOLDS):
-            with np.load(output_dir / "fit" / name / f"fold{k}.npz") as saved:
-                fits.append({
-                    "train_energy": saved["train_energy"],
-                    "train_rms": saved["train_rms"],
-                    "residual": np.concatenate([saved["train_energy"][None], saved["in_sample_residual"]]),
-                    "head_dim": saved["m2_shift"].shape[-1],
-                })
+        held = load_held_out(output_dir, name, task_count)
+        fits = load_fits(output_dir, name)
         head_dim = fits[0]["head_dim"]
         parameters = {"M0": 0, "M1": 1, "M2": head_dim, "M3": 2 * head_dim, "M4": head_dim * head_dim + head_dim}
 
@@ -861,6 +1043,9 @@ def report(output_dir: Path, task_count: int) -> None:
             for method, row in scores["methods"].items():
                 results.append({"policy": name, "rows": row_set, "method": method, "parameters_per_cell": parameters[method], **row})
             second_moment.append({"policy": name, "rows": row_set, **scores["second_moment"]})
+            age_rows += [
+                {"policy": name, "rows": row_set, **row} for row in by_age_bucket(held, row_set_combos(row_set), age_rng)
+            ]
 
         # Path check: step-0 differences against this policy's held-out stale error on the decision rows.
         first_step_paths = [output_dir / "sums" / name / f"fold{k}_first_step.pt" for k in range(FOLDS)]
@@ -922,6 +1107,7 @@ def report(output_dir: Path, task_count: int) -> None:
     write_csv(output_dir / "stale_kv_error_results.csv", results)
     write_csv(output_dir / "stale_kv_error_breakdown.csv", breakdown)
     write_csv(output_dir / "stale_kv_error_second_moment.csv", second_moment)
+    write_csv(output_dir / "stale_kv_error_by_age.csv", age_rows)
     (output_dir / "report.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print(f"{'policy':<12} {'rows':<18} {'method':<6} {'FER':>7} {'95% CI':>17} {'in-sample':>9} {'pooled':>7} {'energy-wt':>9}")
@@ -942,28 +1128,163 @@ def report(output_dir: Path, task_count: int) -> None:
         )
     print(f"Pipeline checks: {pipeline}")
     print(f"Outcome: {summary['outcome']}")
+    print(f"\nM4 by age bucket ({DECISION_ROWS}): FER [95% CI], energy-weighted")
+    for row in age_rows:
+        if row["rows"] == DECISION_ROWS and row["method"] == "M4" and row["tasks"]:
+            print(
+                f"{row['policy']:<12} age {row['age_bucket']:<5} {row['fer_mean']:>7.3f} "
+                f"[{row['ci_low']:>7.3f}, {row['ci_high']:>6.3f}] {row['energy_weighted_fer']:>7.3f} ({row['tasks']} tasks)"
+            )
+
+
+def worst_case_fer_gain(rho: np.ndarray) -> np.ndarray:
+    """Most FER a fit can gain by learning a component holding a share rho of the error energy.
+
+    If e = s + r with |r|^2 = rho |e|^2, then |s| >= (1 - sqrt(rho)) |e|, so
+    removing r exactly lowers the residual energy by at most 2 sqrt(rho) - rho
+    of |e|^2. That is the case where r points along s; uncorrelated, it is rho.
+    """
+
+    rho = np.clip(rho, 0.0, 1.0)
+    return 2 * np.sqrt(rho) - rho
+
+
+def rounding_check(output_dir: Path, task_count: int) -> dict[str, Any]:
+    """Amendment 2: does the registered classification survive the worst-case rounding contribution?
+
+    Rounding per row comes from the probes, for answer rows. Prompt rows are
+    only computed in full forwards, which match dense exactly. Every stale
+    answer row is assumed to carry one partial forward's rounding, which
+    overstates it for rows last computed at a full refresh.
+    """
+
+    registered = json.loads((output_dir / "report.json").read_text())
+    exact = all(
+        json.loads((output_dir / "rounding" / f"fold{k}.json").read_text())["stale_free_cache_equals_dense"]
+        for k in range(FOLDS)
+    )
+    combos = row_set_combos(DECISION_ROWS)
+    answer = ROW_TYPES.index("answer")
+    answer_combos = [combo for combo in combos if combo % len(ROW_TYPES) == answer]
+    scored = slice(SCORED_FIRST_LAYER, None)
+    policies = {}
+    for name in POLICIES:
+        parts = [torch.load(output_dir / "rounding" / name / f"fold{k}.pt", weights_only=True) for k in range(FOLDS)]
+        probe_rows = sum(part["rows"] for part in parts).numpy()[..., answer]  # [layers, kinds]
+        probe_energy = sum(part["energy"] for part in parts).numpy()[..., answer]  # [layers, kinds, heads]
+        rounding_per_row = probe_energy / np.maximum(probe_rows, 1)[..., None]
+
+        held = load_held_out(output_dir, name, task_count)
+        stale_answer_rows = held["rows"][..., answer_combos].sum(axis=(0, 4))  # [layers, kinds, heads]
+        rounding_energy = stale_answer_rows * rounding_per_row
+        error_energy = held["energy"][..., combos].sum(axis=(0, 4))
+        rho = rounding_energy.sum(-1)[scored] / error_energy.sum(-1)[scored]  # [layers, kinds]
+        fer_bound = float(worst_case_fer_gain(rho).mean())
+
+        scores = registered["policies"][name][DECISION_ROWS]
+        m4 = scores["methods"]["M4"]
+        adjusted = {key: m4[key] - fer_bound for key in ("fer_mean", "ci_low", *(f"fold{k + 1}_mean" for k in range(FOLDS)))}
+
+        # S2: |P s| >= |P e| - |r| and |s| <= |e| + |r|, pooled over rows.
+        captured = held["subspace"][:, scored][..., combos].sum()
+        total, rounded = error_energy[scored].sum(), rounding_energy[scored].sum()
+        s2_worst = max(np.sqrt(captured) - np.sqrt(rounded), 0.0) ** 2 / (np.sqrt(total) + np.sqrt(rounded)) ** 2
+
+        # S1: a cell's RMS moves by at most the rounding RMS q, in the task and in training alike.
+        fits = load_fits(output_dir, name)
+        q = np.zeros(rounding_per_row.shape + (COMBOS,))
+        q[..., answer_combos] = np.sqrt(rounding_per_row)[..., None]
+        q = q[scored][..., combos]
+        relative, worst = [], []
+        for task in range(len(held["fold"])):
+            train_rms = fits[held["fold"][task]]["train_rms"][scored][..., combos]
+            task_rows = held["rows"][task, scored][..., combos]
+            enough = (task_rows >= MIN_ROWS_FOR_S1) & (train_rms > 0)
+            a = np.sqrt(held["energy"][task, scored][..., combos][enough] / task_rows[enough])
+            b, cell_q = train_rms[enough], q[enough]
+            relative.append(np.abs(a - b) / b)
+            worst.append(np.where(b > cell_q, (np.abs(a - b) + 2 * cell_q) / np.maximum(b - cell_q, 1e-300), np.inf))
+        s1 = float(np.median(np.concatenate(relative)))
+        s1_worst = float(np.median(np.concatenate(worst)))
+
+        second_worst = s1_worst <= MAX_S1_RELATIVE_ERROR and s2_worst >= MIN_S2_FRACTION
+        policies[name] = {
+            "probed_answer_rows": int(probe_rows[0, 0]),
+            "rounding_share_by_layer": {KINDS[k]: rho[:, k].tolist() for k in range(len(KINDS))},
+            "rounding_share_mean": float(rho.mean()),
+            "rounding_share_max": float(rho.max()),
+            "uncorrelated_fer_bound": float(np.clip(rho, 0, 1).mean()),
+            "worst_case_fer_bound": fer_bound,
+            "m4_registered": {key: m4[key] for key in adjusted},
+            "m4_minus_worst_case": adjusted,
+            "first_moment_registered": scores["first_moment"],
+            "first_moment_worst_case": first_moment_class(adjusted),
+            "s1_registered": scores["second_moment"]["s1_median_relative_error"],
+            "s1_recomputed": s1,
+            "s1_worst_case": s1_worst,
+            "s2_registered": scores["second_moment"]["s2_captured_fraction"],
+            "s2_worst_case": float(s2_worst),
+            "second_moment_registered": scores["second_moment_systematic"],
+            "second_moment_worst_case": bool(second_worst),
+        }
+
+    def outcome(first: bool, second: bool) -> str:
+        return "A: first-moment systematic" if first else "B: second-moment only" if second else "C: neither"
+
+    worst_outcome = outcome(
+        all(policies[name]["first_moment_worst_case"] == "systematic" for name in DECISION_POLICIES),
+        all(policies[name]["second_moment_worst_case"] for name in DECISION_POLICIES),
+    )
+    registered_outcome = outcome(registered["first_moment_systematic"], registered["second_moment_systematic"])
+    unchanged = all(
+        entry["first_moment_worst_case"] == entry["first_moment_registered"]
+        and entry["second_moment_worst_case"] == entry["second_moment_registered"]
+        for entry in policies.values()
+    )
+    probed = all(entry["probed_answer_rows"] > 0 for entry in policies.values())
+    result = {
+        "stale_free_cache_equals_dense": exact,
+        "registered_outcome": registered["outcome"],
+        "worst_case_outcome": worst_outcome,
+        "every_policy_keeps_its_classification": unchanged,
+        "passed": bool(exact and probed and unchanged and worst_outcome == registered_outcome),
+        "policies": policies,
+    }
+    (output_dir / "rounding_check.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    for name, entry in policies.items():
+        print(
+            f"{name}: rounding share mean {entry['rounding_share_mean']:.2e} (max {entry['rounding_share_max']:.2e}); "
+            f"M4 FER {entry['m4_registered']['fer_mean']:.3f} -> worst case {entry['m4_minus_worst_case']['fer_mean']:.3f} "
+            f"({entry['first_moment_registered']} -> {entry['first_moment_worst_case']}); "
+            f"S1 {entry['s1_registered']:.3f} -> {entry['s1_worst_case']:.3f}, S2 {entry['s2_registered']:.3f} -> {entry['s2_worst_case']:.3f}"
+        )
+    print(f"Worst-case outcome: {worst_outcome}; rounding check passed: {result['passed']}")
+    return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("step", choices=("collect", "fit", "evaluate", "report"))
+    parser.add_argument("step", choices=("collect", "fit", "evaluate", "report", "rounding", "rounding-check"))
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--fold", type=int, choices=range(FOLDS), help="Required for collect and evaluate")
-    parser.add_argument("--gpu-folder", help="For fit and report, e.g. NVIDIA_A100-SXM4-80GB")
+    parser.add_argument("--fold", type=int, choices=range(FOLDS), help="Required for collect, evaluate and rounding")
+    parser.add_argument("--gpu-folder", help="For fit, report and rounding-check, e.g. NVIDIA_A100-SXM4-80GB")
     args = parser.parse_args()
     config = load_kv_policy_experiment_config(args.config)
-    if args.step in ("collect", "evaluate"):
+    gpu_steps = {"collect": collect, "evaluate": evaluate, "rounding": rounding}
+    if args.step in gpu_steps:
         if args.fold is None:
             parser.error(f"{args.step} needs --fold")
-        (collect if args.step == "collect" else evaluate)(config, args.fold)
+        gpu_steps[args.step](config, args.fold)
         return
     if not args.gpu_folder:
         parser.error(f"{args.step} needs --gpu-folder")
     output_dir = study_dir(config, args.gpu_folder)
     if args.step == "fit":
         fit(output_dir)
-    else:
+    elif args.step == "report":
         report(output_dir, config.evaluation.max_prompts)
+    else:
+        rounding_check(output_dir, config.evaluation.max_prompts)
 
 
 if __name__ == "__main__":

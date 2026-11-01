@@ -365,3 +365,140 @@ kept that out of the decision.
 The check as registered assumed rounding is unpredictable noise. That
 assumption was wrong: rounding is a deterministic function of the token, so
 a model given c can learn part of it.
+
+## Amendment 2 (2026-11-01, after the registered result, before the rounding check ran)
+
+The registered outcome above stays as it is. This amendment defines one
+follow-up check that can upgrade it to trusted. It was written after the
+result was seen and before the check ran.
+
+### What the rounding check measures
+
+A stale row differs from dense for two reasons:
+- **staleness**, which this study is about;
+- **rounding**: the cached run recomputes rows in small partial forwards,
+  so bf16 sums are added in a different order than in dense's full forward.
+
+To isolate rounding:
+1. At steps 1, 9, 17, … (every 8th step), for each policy, build a
+   stale-free cache with one full forward. That cache must equal dense
+   bitwise at every layer, as at step 0.
+2. Recompute exactly the rows the policy recomputed that step, in the same
+   partial forward, reading every other row from the stale-free cache. Steps
+   where the policy did a full refresh have no partial forward and are
+   skipped.
+3. Nothing is stale, so the difference from dense is rounding alone. It is
+   recorded for committed rows at every (layer, K/V, head), by row type.
+
+### The bound
+
+- **ρ** is rounding's share of the error energy, for each (policy, layer
+  1–27, K/V), on the decision rows (prompt and answer, held out). Prompt
+  rows are only ever computed in full forwards, so their rounding is zero.
+  Every stale answer row is assumed to carry the rounding of one partial
+  forward, at the probed average per row and head. This overstates rounding
+  for rows last computed at a full refresh.
+- Learning a component that holds a share ρ of the error energy can add at
+  most **2√ρ − ρ** to FER: the worst case, where rounding points along the
+  staleness error. If the two are uncorrelated, it adds ρ.
+- **B**, the FER bound, is the mean of 2√ρ − ρ over (layer 1–27, K/V),
+  averaged the same way as the primary score.
+- **Worst-case first moment:** subtract B from M4's held-out FER mean, its
+  interval's lower bound and each fold mean, then apply the registered rule.
+- **Worst-case second moment.** The outcome also rests on the second moment,
+  so its bounds are included too:
+  - S1: in each (task, cell), both RMS values move by at most the rounding
+    RMS q, so the relative error becomes at most (|a − b| + 2q) / (b − q);
+    the median is taken over cells.
+  - S2: |Pe| − |r| ≤ |Ps| and |s| ≤ |e| + |r| give the worst-case captured
+    fraction (√captured − √rounding)² / (√total + √rounding)², pooled over
+    rows.
+
+### Criterion
+
+**The registered outcome is upgraded to trusted** if all of these hold:
+1. Every stale-free cache equals dense bitwise.
+2. Every policy (refresh_4, refresh_32 and refresh_256) keeps its
+   first-moment class and its second-moment flag under the worst case.
+3. The outcome (A, B or C) is unchanged.
+
+**If it passes,** the record reads: "UNTRUSTED as registered; upgraded to
+trusted by a follow-up numerics check, defined after the original result."
+**If it fails,** the outcome stays untrusted. The definitive version would
+rerun the study with full-shape forwards that keep only the policy's rows,
+which removes rounding instead of bounding it. That is done only if it is
+needed.
+
+Code: `stale_kv_error_study.py rounding --fold K`, then `rounding-check`.
+Output: `rounding_check.json`.
+
+## Follow-up readouts (2026-11-01, from the registered data)
+
+These come from the held-out files the registered run already wrote. They
+are not part of any decision.
+
+- Energy-weighted M4 FER on prompt and answer rows (also in the results
+  table above): 0.008 for refresh_4, 0.068 for refresh_32 and 0.259 for
+  refresh_256.
+- Held-out M4 FER by age bucket on prompt and answer rows, with a 95%
+  bootstrap interval over tasks. All 64 tasks have rows in every bucket
+  shown. Full table: `stale_kv_error_by_age.csv`, all methods and row sets.
+
+| Policy | Age 1 | 2–3 | 4–7 | 8–31 | 32+ |
+|---|---|---|---|---|---|
+| refresh_4 | 0.016 [0.014, 0.019] | 0.023 [0.021, 0.026] | | | |
+| refresh_32 | 0.102 [0.088, 0.116] | 0.120 [0.107, 0.133] | 0.137 [0.123, 0.151] | 0.149 [0.137, 0.160] | |
+| refresh_256 | 0.225 [0.203, 0.247] | 0.238 [0.219, 0.256] | 0.270 [0.249, 0.290] | 0.351 [0.328, 0.374] | 0.423 [0.403, 0.443] |
+
+FER rises with age within each policy. It also differs between policies at
+the same age. A refresh_256 row of age 1 (0.225) is about twice as
+predictable as a refresh_32 row of age 1 (0.102). So predictability seems to
+depend on how stale the rest of the cache is, not only on the row's own age.
+
+## Exploratory decoding pilot (criteria fixed 2026-11-01, before it ran)
+
+**Question.** Does subtracting the fitted error change decisions? Removing
+41% of the error energy matters only if it also lowers decision flips.
+
+**Setup:**
+- Forced-trajectory replay on the 64 tasks, on an A100 80GB.
+- refresh_4, refresh_32 and refresh_256, each run uncorrected and corrected
+  at strengths 0.5 and 1.0.
+- A corrected policy adds strength × (A·c + b) from M4 to every stale K and V
+  row before attention reads it, in layers 1–27; layer 0 is left alone. Key
+  corrections are rotated by the row's RoPE. The cache itself is never
+  changed.
+- Each task uses the fit of its own held-out fold.
+- **Row types are computed as a decoder could:** prompt by position, padding
+  if the committed token is a stop token, answer otherwise. On these 64 dense
+  outputs this agrees with the study's definition (first stop token onward)
+  on all 16,384 response rows, with no disagreements. Tokens are never
+  re-masked, so the two definitions also agree at every step.
+- **Exploratory:** the fits come from uncorrected trajectories, and a
+  corrected cache drifts differently. Strength 0.5 separates "the correction
+  does not help" from "it over-corrects".
+
+**Primary metric.** Divergence events per task at refresh_256, as in the
+replay proxy: token TV plus counted position changes. The comparison is
+paired: corrected minus uncorrected, per task.
+
+**Success.** At strength 0.5 or 1.0, the mean paired change has a 97.5%
+bootstrap interval entirely below zero (10,000 resamples of tasks, seed 0).
+Each interval is 97.5% because two strengths are tested (Bonferroni).
+
+**Other outcomes:**
+- **Over-correction:** an interval entirely above zero.
+- **No success at either strength:** a fixed correction does not reduce
+  divergence events even at the longest staleness. The fixed-correction
+  direction is then finished at this generation length.
+
+**Reported but not part of the criterion:**
+- refresh_32 and refresh_4;
+- top-1 flips, large-margin decision changes, summed token TV and mean KL.
+
+**Pipeline requirement.** The uncorrected policies must reproduce the
+earlier replay's per-step token TV, KL and flips exactly, or the pilot is
+not trusted.
+
+Code: `stale_kv_correction_pilot.py run --fold K`, then `report`. Outputs:
+`<run>/<GPU type>/stale_kv_correction_pilot/`.

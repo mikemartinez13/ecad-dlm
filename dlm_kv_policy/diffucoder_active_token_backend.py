@@ -113,6 +113,10 @@ class DiffuCoderActiveTokenKVBackend:
         # Optional callback(layer_id, positions, keys, values) with the pre-RoPE
         # K/V of every recomputed row; used by stale_kv_error_study.py.
         self.kv_observer = None
+        # Optional callback(layer_id, keys, values, cos, sin) -> (keys, values)
+        # that adjusts the cached K/V (post-RoPE keys) before attention reads
+        # them, without changing the cache; used by stale_kv_correction_pilot.py.
+        self.kv_correction = None
 
     def set_policy(self, policy: Any) -> None:
         policy.validate()
@@ -173,6 +177,8 @@ class DiffuCoderActiveTokenKVBackend:
             )
         self.cache.update_kv(layer_id, positions, keys, values, self._step)
         all_keys, all_values = self.cache.kv(layer_id)
+        if self.kv_correction is not None:
+            all_keys, all_values = self.kv_correction(layer_id, all_keys, all_values, cos, sin)
         mask = self._select_mask(attention_mask, positions)
         if self.grouped_gqa:
             output = _grouped_attention(query, all_keys, all_values, mask)
@@ -229,6 +235,7 @@ class DiffuCoderActiveTokenKVBackend:
         if self.cache.boundary_hidden is None or self.cache.boundary_hidden[0].shape[1] != input_ids.shape[1]:
             self.start_generation(input_ids.shape[1])
         self._step = step
+        self._input_ids = input_ids
         states = state.classify(input_ids, step)
         decoded_age = state.decoded_age(step, input_ids.device)
         cache_age = self.cache.token_age(step)

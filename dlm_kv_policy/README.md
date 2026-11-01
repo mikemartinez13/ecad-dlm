@@ -210,6 +210,17 @@ type, which supplies each task's final dense output. Results go to
 `<run>/<GPU type>/stale_kv_error_study/`; the running sums alone take about
 16 GB.
 
+Two follow-ups, both pre-specified in `STALE_KV_ERROR_STUDY.md`:
+
+- **Rounding check** (`stale_kv_error_study rounding --fold K`, then
+  `rounding-check`). It measures the rounding-only error of rows recomputed
+  in partial forwards and asks whether the registered classification
+  survives its worst-case contribution.
+- **Correction pilot** (`stale_kv_correction_pilot.py run --fold K`, then
+  `report`). It adds the fitted M4 correction to stale rows during the
+  replay, at strengths 0.5 and 1.0. It measures paired changes in
+  divergence events.
+
 ## Implementation and experiment selection
 
 | File | Responsibility |
@@ -231,6 +242,7 @@ type, which supplies each task's final dense output. Results go to
 | `decoding_oracles.py` | Timing curve t(n), caching and parallel-decoding ceilings, autoregressive estimate |
 | `autoregressive_reference.py` | Qwen2.5-Coder-7B-Instruct time per task and pass@1 on the same tasks |
 | `stale_kv_error_study.py` | Whether stale K/V error is predictable; pre-registered in `STALE_KV_ERROR_STUDY.md` |
+| `stale_kv_correction_pilot.py` | Exploratory pilot: applies the fitted stale K/V correction during the replay |
 
 All modes use `scripts/slurm/run_diffucoder_kv_policy_experiments.sh`:
 

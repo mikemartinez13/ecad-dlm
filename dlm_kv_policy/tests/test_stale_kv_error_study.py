@@ -11,6 +11,8 @@ import torch
 
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
+from dlm_kv_policy.forced_trajectory_replay import replay_task
+from dlm_kv_policy.stale_kv_correction_pilot import StaleRowCorrection
 from dlm_kv_policy.stale_kv_error_study import (
     COMBOS,
     FOLDS,
@@ -21,6 +23,7 @@ from dlm_kv_policy.stale_kv_error_study import (
     add_rows,
     assign_folds,
     empty_held_out,
+    empty_rounding,
     empty_sums,
     fit,
     fit_methods,
@@ -29,7 +32,10 @@ from dlm_kv_policy.stale_kv_error_study import (
     path_check,
     report,
     residual_energy,
+    rounding_check,
+    rounding_probe,
     row_types,
+    worst_case_fer_gain,
 )
 from test_backend_cpu import FakeModel
 from test_replay_compounding import greedy_sample_tokens
@@ -99,6 +105,54 @@ class StaleRowReplayTests(unittest.TestCase):
         rotated = replay.backends["refresh_4"].cache.keys[0][0, 0, 1:3].double()
         self.assertFalse(torch.allclose(rotated, expected[1:3]))
 
+    def test_rounding_probe_measures_committed_rows_against_an_exact_cache(self) -> None:
+        replay = fake_replay(self.model, {"refresh_4": DKVDecodeRefreshPolicy(cache_reloading_step=4)})
+        probe = DiffuCoderActiveTokenKVBackend(self.model, DKVDecodeRefreshPolicy(cache_reloading_step=1))
+        sums = {"refresh_4": empty_rounding(2, 1, "cpu")}
+        _, exact = rounding_probe(replay, probe, self.prompt, torch.ones_like(self.prompt), self.row_type, sums)
+        self.assertTrue(exact)
+        self.assertGreater(sums["refresh_4"]["rows"].sum().item(), 0)
+        self.assertEqual(sums["refresh_4"]["rows"][..., 0].sum().item(), 0)  # prompt rows are never probed
+
+
+class CorrectionTests(unittest.TestCase):
+    def test_correction_adds_the_rotated_prediction_to_stale_rows_only(self) -> None:
+        torch.manual_seed(0)
+        model = RotatingFakeModel().eval()
+        replay = fake_replay(model, {})
+        backend = DiffuCoderActiveTokenKVBackend(model, DKVDecodeRefreshPolicy(cache_reloading_step=4))
+        layers, heads, head_dim = 2, 1, 4
+        # e_hat = c, so at strength 0.5 every stale K/V row becomes 1.5 times its cached value.
+        fit = {
+            "m4_matrix": torch.eye(head_dim).expand(layers, 2, heads, COMBOS, head_dim, head_dim).clone(),
+            "m4_intercept": torch.zeros(layers, 2, heads, COMBOS, head_dim),
+        }
+        correction = StaleRowCorrection(backend, fit, 0.5, {0})
+        calls = []
+
+        def recording(layer, keys, values, cos, sin):
+            output = correction(layer, keys, values, cos, sin)
+            last = backend.cache.layer_last_refresh[layer, 0]
+            calls.append((layer, last.ge(0) & last.lt(backend._step), keys.clone(), values.clone(), [t.clone() for t in output]))
+            return output
+
+        backend.kv_correction = recording
+        prompt = torch.tensor([[4, 5, 6]])
+        correction.start(prompt.shape[1], prompt.shape[1] + replay.generation.gen_length)
+        replay_task(model, replay.sampler, {"refresh_4": backend}, prompt, torch.ones_like(prompt), replay.generation, None)
+        corrected_calls = 0
+        for layer, stale, keys, values, (new_keys, new_values) in calls:
+            if layer == 0 or not stale.any():
+                torch.testing.assert_close(new_keys, keys)
+                continue
+            corrected_calls += 1
+            torch.testing.assert_close(new_keys[0, :, stale], 1.5 * keys[0, :, stale])
+            torch.testing.assert_close(new_values[0, :, stale], 1.5 * values[0, :, stale])
+            torch.testing.assert_close(new_keys[0, :, ~stale], keys[0, :, ~stale])
+        self.assertGreater(corrected_calls, 0)
+        # The cache itself keeps the uncorrected rows.
+        torch.testing.assert_close(backend.cache.kv(1)[0], calls[-1][2])
+
 
 class FitTests(unittest.TestCase):
     def sums_for(self, c, e, combo):
@@ -143,11 +197,14 @@ class FitTests(unittest.TestCase):
         self.assertLess(held["residual"][-1].sum().item(), 0.1 * held["energy"].sum().item())
 
 
-def run_synthetic_pipeline(output_dir: Path, errors) -> dict:
-    """fit and report on synthetic stale rows: errors(c) gives e for rows c [1, rows, head_dim]."""
+def run_synthetic_pipeline(output_dir: Path, errors, combo: int = 3) -> dict:
+    """fit and report on synthetic stale rows: errors(c) gives e for rows c [1, rows, head_dim].
+
+    combo 3 is age 2-3, prompt rows; combo 4 is age 2-3, answer rows.
+    """
 
     torch.manual_seed(0)
-    layers, head_dim, tasks, rows_per_task, combo = 2, 128, 8, 300, 3  # combo 3: age 2-3, prompt
+    layers, head_dim, tasks, rows_per_task = 2, 128, 8, 300
     folds = [index % FOLDS for index in range(tasks)]
     data = {}
     for index in range(tasks):
@@ -200,6 +257,36 @@ class SyntheticPipelineTests(unittest.TestCase):
         self.assertLess(m4["ci_low"], 0.0)
         self.assertEqual(scores["first_moment"], "not systematic")
         self.assertIn("C: neither", result["outcome"])
+
+
+class RoundingCheckTests(unittest.TestCase):
+    def test_worst_case_bound_is_reached_when_rounding_points_along_staleness(self) -> None:
+        s = torch.randn(1000, dtype=torch.float64)
+        e = s + 0.1 * s  # rounding r = 0.1 s
+        rho = (0.1 * s).square().sum() / e.square().sum()
+        removed = 1 - s.square().sum() / e.square().sum()  # FER of predicting r exactly
+        self.assertAlmostEqual(float(worst_case_fer_gain(np.array(rho.item()))), removed.item(), places=10)
+
+    def test_classification_must_survive_the_worst_case_rounding(self) -> None:
+        matrix = torch.randn(128, 128, dtype=torch.float64, generator=torch.Generator().manual_seed(5)) / 128**0.5
+        for rounding_per_row, passes in ((1e-9, True), (1e3, False)):
+            with tempfile.TemporaryDirectory() as directory:
+                output_dir = Path(directory)
+                run_synthetic_pipeline(output_dir, lambda c: c @ matrix.T + 0.1 * torch.randn_like(c), combo=4)
+                for name in POLICIES:
+                    for k in range(FOLDS):
+                        sums = empty_rounding(2, 1, "cpu")
+                        sums["rows"][..., 1] = 10
+                        sums["energy"][..., 1] = 10 * rounding_per_row
+                        (output_dir / "rounding" / name).mkdir(parents=True, exist_ok=True)
+                        torch.save(sums, output_dir / "rounding" / name / f"fold{k}.pt")
+                for k in range(FOLDS):
+                    (output_dir / "rounding" / f"fold{k}.json").write_text(json.dumps({"stale_free_cache_equals_dense": True}))
+                with redirect_stdout(io.StringIO()):
+                    result = rounding_check(output_dir, 8)
+            self.assertEqual(result["passed"], passes)
+            entry = result["policies"]["refresh_32"]
+            self.assertAlmostEqual(entry["s1_recomputed"], entry["s1_registered"], places=12)
 
 
 class PathCheckTests(unittest.TestCase):
