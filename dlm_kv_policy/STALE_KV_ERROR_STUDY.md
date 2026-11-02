@@ -429,8 +429,16 @@ rerun the study with full-shape forwards that keep only the policy's rows,
 which removes rounding instead of bounding it. That is done only if it is
 needed.
 
-Code: `stale_kv_error_study.py rounding --fold K`, then `rounding-check`.
-Output: `rounding_check.json`.
+Code: `stale_kv_error_study.py rounding --fold K --part P`, then
+`rounding-check`. Output: `rounding_check.json`.
+
+**Change before it ran (2026-11-02): which GPUs may measure rounding.** A100
+80GB GPUs were not available, so any A100 may now run the rounding jobs, and
+each fold is split into two jobs. A100 40GB is the same chip, but rounding
+depends on the kernels, so a job on any GPU type other than the study's
+stops unless every policy reproduces the A100 80GB replay's per-step token
+TV, KL and flips exactly. A rounding measurement therefore counts only if
+it was made with the study GPU's exact arithmetic. Each job records its GPU.
 
 ## Follow-up readouts (2026-11-01, from the registered data)
 
@@ -500,5 +508,19 @@ Each interval is 97.5% because two strengths are tested (Bonferroni).
 earlier replay's per-step token TV, KL and flips exactly, or the pilot is
 not trusted.
 
-Code: `stale_kv_correction_pilot.py run --fold K`, then `report`. Outputs:
-`<run>/<GPU type>/stale_kv_correction_pilot/`.
+**Change before it ran (2026-11-02): any GPU type.** A100 80GB GPUs were
+not available. Every comparison is between runs of one task on one GPU, so
+the pilot now runs on A100, A40 or A6000. Each fold is split into two jobs,
+and each task records its GPU. A different GPU type rounds differently, so
+it cannot reproduce the A100 80GB replay exactly. The pipeline requirement
+becomes:
+- every policy is also run at strength 0, through the correction path with
+  nothing added, and must match its uncorrected run exactly, on every task;
+- tasks that ran on an A100 80GB must also match the earlier replay, as
+  before.
+
+The success criterion is unchanged.
+
+Code: `stale_kv_correction_pilot.py run --fold K --part P`, then `report`.
+Outputs: `<run>/NVIDIA_A100-SXM4-80GB/stale_kv_correction_pilot/`, for
+tasks from every GPU.

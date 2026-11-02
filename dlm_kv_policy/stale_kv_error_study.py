@@ -33,8 +33,10 @@ Four steps. Folds split the tasks, balanced between HumanEval+ and MBPP+:
 
 Amendment 2 adds a rounding check, run after the registered result:
 
-  rounding --fold K   GPU. Measures the rounding-only error of rows each
-                      policy recomputes in partial forwards.
+  rounding --fold K --part P
+                      GPU. Measures the rounding-only error of rows each
+                      policy recomputes in partial forwards, for half of
+                      fold K's tasks. Any A100 may run it (see STUDY_GPU).
   rounding-check      Asks whether the registered classification survives the
                       worst-case contribution of that rounding. No model.
 
@@ -83,6 +85,11 @@ DECISION_POLICIES = ("refresh_32", "refresh_256")
 CONTROL_POLICY = "full_refresh_every_step"
 FOLDS = 4
 FOLD_SEED = 0
+# collect and evaluate ran on this GPU type. The follow-ups (rounding and the
+# correction pilot) read its replay and fits from any GPU and write here too.
+STUDY_GPU = "NVIDIA_A100-SXM4-80GB"
+# The follow-ups split each fold's tasks into this many jobs.
+PARTS = 2
 # Lower edges of the age buckets after the first; bucket 0 is age 1.
 AGE_EDGES = (2, 4, 8, 32)
 AGE_BUCKETS = ("1", "2-3", "4-7", "8-31", "32+")
@@ -129,6 +136,9 @@ RAW_SAMPLE_MAX_RELATIVE_ERROR = 1e-4
 # from dense is rounding alone. Probe steps are 1, 9, 17, ...
 ROUNDING_PROBE_EVERY = 8
 ROUNDING_PROBE_OFFSET = 1
+# Per-step fields that must match the earlier replay exactly when a policy is
+# replayed again (rounding on another GPU type; the pilot's uncorrected runs).
+COMPARED_FIELDS = ("token_tv", "kl", "top1_flip", "position_flip")
 
 
 def assign_folds(task_ids: list[str]) -> list[int]:
@@ -312,11 +322,11 @@ def rounding_probe(
     attention_mask: torch.Tensor,
     row_type: torch.Tensor,
     sums: dict[str, dict[str, torch.Tensor]],
-) -> tuple[list[int], bool]:
+) -> tuple[dict[str, Any], bool]:
     """Replay one task; at probe steps, add each policy's rounding-only error to sums.
 
     Only committed rows are measured, since only they go stale. Returns the
-    dense token IDs and whether every stale-free cache matched dense exactly.
+    replay result and whether every stale-free cache matched dense exactly.
     """
 
     generation = replay.generation
@@ -364,7 +374,7 @@ def rounding_probe(
         replay.model, replay.sampler, replay.backends, prompt, attention_mask, generation, replay.top_p_logits,
         on_step=on_step,
     )
-    return result["dense_token_ids"], exact
+    return result, exact
 
 
 # Running sums, fits and held-out sums -----------------------------------------
@@ -565,10 +575,20 @@ def study_dir(config: Any, gpu_folder: str) -> Path:
     return config.run.run_dir / gpu_folder / "stale_kv_error_study"
 
 
+def same_steps(rows: list[dict[str, Any]], other: list[dict[str, Any]]) -> bool:
+    """Whether two replays of one policy have exactly the same per-step fields."""
+
+    return [{key: row[key] for key in COMPARED_FIELDS} for row in rows] == [
+        {key: row[key] for key in COMPARED_FIELDS} for row in other
+    ]
+
+
 class Study:
     """The model, tasks and folds shared by collect and evaluate."""
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Any, gpu_folder: str | None = None) -> None:
+        """gpu_folder is where the study's data are; by default, this GPU's."""
+
         if config.generation.temperature != 0:
             raise ValueError("The stale K/V error study is pre-registered for greedy decoding")
         self.config = config
@@ -581,9 +601,10 @@ class Study:
             local_files_only=config.model.local_files_only,
         )
         self.stop_ids = {token for token in (self.tokenizer.eos_token_id, self.tokenizer.pad_token_id) if token is not None}
-        self.output_dir = study_dir(config, gpu_folder_name())
+        gpu_folder = gpu_folder or gpu_folder_name()
+        self.output_dir = study_dir(config, gpu_folder)
         # The earlier forced-trajectory replay has every task's final dense output.
-        self.replay_dir = config.run.run_dir / gpu_folder_name() / "forced_trajectory_replay" / "tasks"
+        self.replay_dir = config.run.run_dir / gpu_folder / "forced_trajectory_replay" / "tasks"
         attention = self.model.model.layers[0].self_attn
         self.shape = (len(self.model.model.layers), attention.num_key_value_heads, attention.head_dim)
         print(f"Results: {self.output_dir}; layers, KV heads, head_dim = {self.shape}", flush=True)
@@ -597,6 +618,9 @@ class Study:
 
     def fold_tasks(self, fold: int) -> list[int]:
         return [index for index, task_fold in enumerate(self.folds) if task_fold == fold]
+
+    def part_tasks(self, fold: int, part: int) -> list[int]:
+        return self.fold_tasks(fold)[part::PARTS]
 
     def task_inputs(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         """Seeds the task and returns its prompt, attention mask, row types and saved replay."""
@@ -614,7 +638,7 @@ class Study:
         if replay.run(prompt, attention_mask, row_type, sink, first_step_sink) != saved["dense_token_ids"]:
             raise RuntimeError(f"Task {index}: dense output differs from the earlier replay")
 
-    def write_job_info(self, step: str, fold: int) -> None:
+    def write_job_info(self, step: str, fold: int, part: int | None = None) -> None:
         def git(*args: str) -> str:
             return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
 
@@ -627,7 +651,8 @@ class Study:
             "generation": dict(self.config.generation.__dict__),
             "folds": {task.task_id: fold for task, fold in zip(self.tasks, self.folds)},
         }
-        path = self.output_dir / "jobs" / f"{step}_fold{fold}.json"
+        name = f"{step}_fold{fold}" if part is None else f"{step}_fold{fold}_part{part}"
+        path = self.output_dir / "jobs" / f"{name}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(info, indent=2), encoding="utf-8")
 
@@ -742,35 +767,42 @@ def evaluate(config: Any, fold: int) -> None:
         print(f"fold {fold}: task {count + 1}/{len(indices)} {study.tasks[index].task_id} evaluated", flush=True)
 
 
-def rounding(config: Any, fold: int) -> None:
-    """Amendment 2: rounding-only error of the rows each policy recomputes in partial forwards."""
+def rounding(config: Any, fold: int, part: int) -> None:
+    """Amendment 2: rounding-only error of the rows each policy recomputes in partial forwards.
 
-    study = Study(config)
-    study.write_job_info("rounding", fold)
+    Rounding depends on the GPU's kernels. On a GPU type other than STUDY_GPU,
+    the job stops unless every policy reproduces the study GPU's replay exactly.
+    """
+
+    study = Study(config, STUDY_GPU)
+    gpu = gpu_folder_name()
+    study.write_job_info("rounding", fold, part)
     replay = study.replay(POLICIES)
     probe = DiffuCoderActiveTokenKVBackend(study.model, DKVDecodeRefreshPolicy(cache_reloading_step=1))
     num_layers, num_heads, _ = study.shape
     sums = {name: empty_rounding(num_layers, num_heads, config.model.device) for name in POLICIES}
     exact = True
-    indices = study.fold_tasks(fold)
+    indices = study.part_tasks(fold, part)
     for count, index in enumerate(indices):
         prompt, attention_mask, row_type, saved = study.task_inputs(index)
-        dense_ids, task_exact = rounding_probe(replay, probe, prompt, attention_mask, row_type, sums)
-        if dense_ids != saved["dense_token_ids"]:
+        result, task_exact = rounding_probe(replay, probe, prompt, attention_mask, row_type, sums)
+        if result["dense_token_ids"] != saved["dense_token_ids"]:
             raise RuntimeError(f"Task {index}: dense output differs from the earlier replay")
+        if gpu != STUDY_GPU and not all(same_steps(result["policies"][name], saved["policies"][name]) for name in POLICIES):
+            raise RuntimeError(f"Task {index}: {gpu} does not reproduce the {STUDY_GPU} replay exactly")
         exact &= task_exact
         answer_rows = int(sums["refresh_256"]["rows"][0, 0, ROW_TYPES.index("answer")].item())
         print(
-            f"fold {fold}: task {count + 1}/{len(indices)} {study.tasks[index].task_id} probed; "
+            f"fold {fold} part {part} on {gpu}: task {count + 1}/{len(indices)} {study.tasks[index].task_id} probed; "
             f"stale-free cache equals dense: {task_exact}; refresh_256 answer rows so far {answer_rows}",
             flush=True,
         )
     for name, policy_sums in sums.items():
-        path = study.output_dir / "rounding" / name / f"fold{fold}.pt"
+        path = study.output_dir / "rounding" / name / f"fold{fold}_part{part}.pt"
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({key: tensor.cpu() for key, tensor in policy_sums.items()}, path)
-    path = study.output_dir / "rounding" / f"fold{fold}.json"
-    path.write_text(json.dumps({"stale_free_cache_equals_dense": exact}), encoding="utf-8")
+    path = study.output_dir / "rounding" / f"fold{fold}_part{part}.json"
+    path.write_text(json.dumps({"gpu": gpu, "stale_free_cache_equals_dense": exact}), encoding="utf-8")
 
 
 # CPU steps: fit and report ----------------------------------------------------
@@ -1159,9 +1191,10 @@ def rounding_check(output_dir: Path, task_count: int) -> dict[str, Any]:
     """
 
     registered = json.loads((output_dir / "report.json").read_text())
+    jobs = [f"fold{k}_part{p}" for k in range(FOLDS) for p in range(PARTS)]
     exact = all(
-        json.loads((output_dir / "rounding" / f"fold{k}.json").read_text())["stale_free_cache_equals_dense"]
-        for k in range(FOLDS)
+        json.loads((output_dir / "rounding" / f"{job}.json").read_text())["stale_free_cache_equals_dense"]
+        for job in jobs
     )
     combos = row_set_combos(DECISION_ROWS)
     answer = ROW_TYPES.index("answer")
@@ -1169,7 +1202,7 @@ def rounding_check(output_dir: Path, task_count: int) -> dict[str, Any]:
     scored = slice(SCORED_FIRST_LAYER, None)
     policies = {}
     for name in POLICIES:
-        parts = [torch.load(output_dir / "rounding" / name / f"fold{k}.pt", weights_only=True) for k in range(FOLDS)]
+        parts = [torch.load(output_dir / "rounding" / name / f"{job}.pt", weights_only=True) for job in jobs]
         probe_rows = sum(part["rows"] for part in parts).numpy()[..., answer]  # [layers, kinds]
         probe_energy = sum(part["energy"] for part in parts).numpy()[..., answer]  # [layers, kinds, heads]
         rounding_per_row = probe_energy / np.maximum(probe_rows, 1)[..., None]
@@ -1267,14 +1300,20 @@ def main() -> None:
     parser.add_argument("step", choices=("collect", "fit", "evaluate", "report", "rounding", "rounding-check"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--fold", type=int, choices=range(FOLDS), help="Required for collect, evaluate and rounding")
+    parser.add_argument("--part", type=int, choices=range(PARTS), help="Required for rounding")
     parser.add_argument("--gpu-folder", help="For fit, report and rounding-check, e.g. NVIDIA_A100-SXM4-80GB")
     args = parser.parse_args()
     config = load_kv_policy_experiment_config(args.config)
-    gpu_steps = {"collect": collect, "evaluate": evaluate, "rounding": rounding}
-    if args.step in gpu_steps:
+    gpu_steps = {"collect": collect, "evaluate": evaluate}
+    if args.step in gpu_steps or args.step == "rounding":
         if args.fold is None:
             parser.error(f"{args.step} needs --fold")
-        gpu_steps[args.step](config, args.fold)
+        if args.step == "rounding":
+            if args.part is None:
+                parser.error("rounding needs --part")
+            rounding(config, args.fold, args.part)
+        else:
+            gpu_steps[args.step](config, args.fold)
         return
     if not args.gpu_folder:
         parser.error(f"{args.step} needs --gpu-folder")

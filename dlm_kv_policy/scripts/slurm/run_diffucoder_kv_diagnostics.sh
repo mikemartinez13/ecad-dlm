@@ -26,9 +26,11 @@
 #     --policies full_refresh_every_step,dkv_reference,depth_22,delay_0
 #
 # Timing comparisons (decoding_oracles, autoregressive_reference) must run on
-# the same GPU type; pin it with --constraint. So must every step of
-# stale_kv_error_study and stale_kv_correction_pilot, which read the
-# forced-trajectory replay of that type.
+# the same GPU type; pin it with --constraint. So must collect and evaluate
+# of stale_kv_error_study, which read the forced-trajectory replay of that
+# type. Its rounding step runs on any A100 (--constraint="a100_80gb|a100_40gb")
+# and stale_kv_correction_pilot on any allowed GPU; both read the A100 80GB
+# study's data.
 
 set -euo pipefail
 

@@ -17,6 +17,7 @@ from dlm_kv_policy.stale_kv_error_study import (
     COMBOS,
     FOLDS,
     METHODS,
+    PARTS,
     POLICIES,
     StaleRowReplay,
     add_held_out,
@@ -35,6 +36,7 @@ from dlm_kv_policy.stale_kv_error_study import (
     rounding_check,
     rounding_probe,
     row_types,
+    same_steps,
     worst_case_fer_gain,
 )
 from test_backend_cpu import FakeModel
@@ -152,6 +154,22 @@ class CorrectionTests(unittest.TestCase):
         self.assertGreater(corrected_calls, 0)
         # The cache itself keeps the uncorrected rows.
         torch.testing.assert_close(backend.cache.kv(1)[0], calls[-1][2])
+
+    def test_strength_zero_matches_the_uncorrected_run_exactly(self) -> None:
+        torch.manual_seed(0)
+        model = RotatingFakeModel().eval()
+        replay = fake_replay(model, {})
+        policy = DKVDecodeRefreshPolicy(cache_reloading_step=4)
+        backends = {name: DiffuCoderActiveTokenKVBackend(model, policy) for name in ("plain", "zero")}
+        fit = {
+            "m4_matrix": torch.randn(2, 2, 1, COMBOS, 4, 4),
+            "m4_intercept": torch.randn(2, 2, 1, COMBOS, 4),
+        }
+        correction = StaleRowCorrection(backends["zero"], fit, 0.0, {0})
+        prompt = torch.tensor([[4, 5, 6]])
+        correction.start(prompt.shape[1], prompt.shape[1] + replay.generation.gen_length)
+        result = replay_task(model, replay.sampler, backends, prompt, torch.ones_like(prompt), replay.generation, None)
+        self.assertTrue(same_steps(result["policies"]["plain"], result["policies"]["zero"]))
 
 
 class FitTests(unittest.TestCase):
@@ -279,9 +297,13 @@ class RoundingCheckTests(unittest.TestCase):
                         sums["rows"][..., 1] = 10
                         sums["energy"][..., 1] = 10 * rounding_per_row
                         (output_dir / "rounding" / name).mkdir(parents=True, exist_ok=True)
-                        torch.save(sums, output_dir / "rounding" / name / f"fold{k}.pt")
+                        for part in range(PARTS):
+                            torch.save(sums, output_dir / "rounding" / name / f"fold{k}_part{part}.pt")
                 for k in range(FOLDS):
-                    (output_dir / "rounding" / f"fold{k}.json").write_text(json.dumps({"stale_free_cache_equals_dense": True}))
+                    for part in range(PARTS):
+                        (output_dir / "rounding" / f"fold{k}_part{part}.json").write_text(
+                            json.dumps({"stale_free_cache_equals_dense": True})
+                        )
                 with redirect_stdout(io.StringIO()):
                     result = rounding_check(output_dir, 8)
             self.assertEqual(result["passed"], passes)

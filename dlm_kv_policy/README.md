@@ -212,14 +212,19 @@ type, which supplies each task's final dense output. Results go to
 
 Two follow-ups, both pre-specified in `STALE_KV_ERROR_STUDY.md`:
 
-- **Rounding check** (`stale_kv_error_study rounding --fold K`, then
+- **Rounding check** (`stale_kv_error_study rounding --fold K --part P`, then
   `rounding-check`). It measures the rounding-only error of rows recomputed
   in partial forwards and asks whether the registered classification
   survives its worst-case contribution.
-- **Correction pilot** (`stale_kv_correction_pilot.py run --fold K`, then
-  `report`). It adds the fitted M4 correction to stale rows during the
+- **Correction pilot** (`stale_kv_correction_pilot.py run --fold K --part P`,
+  then `report`). It adds the fitted M4 correction to stale rows during the
   replay, at strengths 0.5 and 1.0. It measures paired changes in
   divergence events.
+
+Both read the A100 80GB study's data from any GPU and write their results
+back to it. The rounding check runs on either size of A100 and stops unless
+the GPU reproduces the A100 80GB replay exactly. The pilot runs on any
+allowed GPU type, since each comparison stays on one GPU.
 
 ## Implementation and experiment selection
 

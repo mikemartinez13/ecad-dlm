@@ -8,18 +8,25 @@ divergence events against the same policy without the correction. The cache
 itself is never changed, and every task uses the fit of its own held-out
 fold. Strength 0.5 separates "does not help" from "over-corrects".
 
+Any GPU may run it: every comparison is between runs of one task on one GPU.
+Data are read from, and results written to, the study GPU's folder; each task
+records the GPU it ran on. Strength 0 runs the correction path with nothing
+added, so it must match the uncorrected run exactly on every GPU. On the
+study GPU, the uncorrected run must also reproduce the earlier replay.
+
 Row types are computed as a decoder could: prompt by position, padding if the
 committed token is a stop token, otherwise answer. On the 64 tasks this
 agrees with the study's definition (first stop token onward) on every
 committed row. The success criterion is in STALE_KV_ERROR_STUDY.md.
 
-  run --fold K   GPU. Replays fold K's tasks, corrected and uncorrected.
+  run --fold K --part P
+                 GPU. Replays half of fold K's tasks, corrected and uncorrected.
   report         Paired differences per policy and strength. No model.
 
 Usage (from the repository root; run inside a GPU allocation):
 
     python -m dlm_kv_policy.stale_kv_correction_pilot run \\
-        --config dlm_kv_policy/configs/diffucoder7b_output_variance_greedy_64tasks.yaml --fold 0
+        --config dlm_kv_policy/configs/diffucoder7b_output_variance_greedy_64tasks.yaml --fold 0 --part 0
 """
 
 from __future__ import annotations
@@ -47,19 +54,22 @@ from .stale_kv_error_study import (
     AGE_EDGES,
     BOOTSTRAP_RESAMPLES,
     FOLDS,
+    PARTS,
     POLICIES,
     ROW_TYPES,
     SCORED_FIRST_LAYER,
+    STUDY_GPU,
     PreRopeKV,
     Study,
+    same_steps,
 )
 
 STRENGTHS = (0.5, 1.0)
 PRIMARY_POLICY = "refresh_256"
 # Two strengths are tested on the primary policy, so each interval is 97.5% (Bonferroni).
 INTERVAL = 0.975
-# Per-step fields that must match the earlier replay for an uncorrected policy.
-COMPARED_FIELDS = ("token_tv", "kl", "top1_flip", "position_flip")
+# A pipeline check, not a tested strength: must equal the uncorrected run exactly.
+CHECK_STRENGTH = 0.0
 
 
 def pilot_dir(config: Any, gpu_folder: str) -> Path:
@@ -126,10 +136,11 @@ def task_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
     }
 
 
-def run(config: Any, fold: int) -> None:
-    study = Study(config)
-    study.write_job_info("pilot", fold)
-    output_dir = pilot_dir(config, gpu_folder_name())
+def run(config: Any, fold: int, part: int) -> None:
+    study = Study(config, STUDY_GPU)
+    gpu = gpu_folder_name()
+    study.write_job_info("pilot", fold, part)
+    output_dir = pilot_dir(config, STUDY_GPU)
     device = config.model.device
     sampler = DiffuCoderDenoisingSampler(DenseDiffuCoderBaseline(study.model))
     top_p_logits = load_top_p_logits(study.model)
@@ -139,29 +150,31 @@ def run(config: Any, fold: int) -> None:
             fit = {key: torch.from_numpy(saved[key]).to(device) for key in ("m4_matrix", "m4_intercept")}
         policy = config.dkv_policies[name]
         backends[name] = DiffuCoderActiveTokenKVBackend(study.model, policy)
-        for strength in STRENGTHS:
+        for strength in (CHECK_STRENGTH, *STRENGTHS):
             backend = DiffuCoderActiveTokenKVBackend(study.model, policy)
             corrections.append(StaleRowCorrection(backend, fit, strength, study.stop_ids))
             backends[f"{name}@{strength}"] = backend
 
-    indices = study.fold_tasks(fold)
+    indices = study.part_tasks(fold, part)
     for count, index in enumerate(indices):
         prompt, attention_mask, _, saved = study.task_inputs(index)
         for correction in corrections:
             correction.start(prompt.shape[1], prompt.shape[1] + config.generation.gen_length)
         result = replay_task(study.model, sampler, backends, prompt, attention_mask, config.generation, top_p_logits)
-        if result["dense_token_ids"] != saved["dense_token_ids"]:
+        steps = result["policies"]
+        dense_matches = result["dense_token_ids"] == saved["dense_token_ids"]
+        if gpu == STUDY_GPU and not dense_matches:
             raise RuntimeError(f"Task {index}: dense output differs from the earlier replay")
-        # Without a correction the backend is unchanged, so it must reproduce the earlier replay.
-        reproduces = {
-            name: [{key: row[key] for key in COMPARED_FIELDS} for row in result["policies"][name]]
-            == [{key: row[key] for key in COMPARED_FIELDS} for row in saved["policies"][name]]
-            for name in POLICIES
-        }
+        # Without a correction the backend is unchanged, so on the study GPU it must reproduce the earlier replay.
+        reproduces = {name: same_steps(steps[name], saved["policies"][name]) for name in POLICIES}
+        zero_matches = {name: same_steps(steps[name], steps[f"{name}@{CHECK_STRENGTH}"]) for name in POLICIES}
         record = {
             "task_id": study.tasks[index].task_id,
             "fold": fold,
+            "gpu": gpu,
+            "dense_matches_earlier_replay": dense_matches,
             "uncorrected_reproduces_earlier_replay": reproduces,
+            "strength_zero_matches_uncorrected": zero_matches,
             "metrics": {name: task_metrics(rows) for name, rows in result["policies"].items()},
             "steps": result["policies"],
         }
@@ -169,7 +182,11 @@ def run(config: Any, fold: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(record), encoding="utf-8")
         events = " ".join(f"{name} {m['divergence_events']:.1f}" for name, m in record["metrics"].items())
-        print(f"fold {fold}: task {count + 1}/{len(indices)} {record['task_id']}: {events}; reproduces {reproduces}", flush=True)
+        print(
+            f"fold {fold} part {part} on {gpu}: task {count + 1}/{len(indices)} {record['task_id']}: {events}; "
+            f"strength 0 matches {zero_matches}; reproduces {reproduces}",
+            flush=True,
+        )
 
 
 def paired_interval(values: np.ndarray, rng: np.random.Generator, level: float) -> tuple[float, float]:
@@ -208,14 +225,23 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
     primary = {strength: comparisons[f"{PRIMARY_POLICY}@{strength}"]["divergence_events"] for strength in STRENGTHS}
     helps = [strength for strength, entry in primary.items() if entry["interval_high"] < 0]
     harms = [strength for strength, entry in primary.items() if entry["interval_low"] > 0]
-    reproduces = all(all(record["uncorrected_reproduces_earlier_replay"].values()) for record in records)
+    zero_matches = all(all(record["strength_zero_matches_uncorrected"].values()) for record in records)
+    on_study_gpu = [record for record in records if record["gpu"] == STUDY_GPU]
+    reproduces = all(
+        record["dense_matches_earlier_replay"] and all(record["uncorrected_reproduces_earlier_replay"].values())
+        for record in on_study_gpu
+    )
+    gpus = {gpu: sum(record["gpu"] == gpu for record in records) for gpu in sorted({record["gpu"] for record in records})}
     summary = {
         "success": bool(helps),
         "strengths_that_reduce_divergence": helps,
         "strengths_that_increase_divergence": harms,
         "primary_policy": PRIMARY_POLICY,
         "interval": INTERVAL,
-        "uncorrected_reproduces_earlier_replay": reproduces,
+        "pipeline_passed": zero_matches and reproduces,
+        "strength_zero_matches_uncorrected": zero_matches,
+        "uncorrected_reproduces_earlier_replay_on_study_gpu": reproduces,
+        "tasks_per_gpu": gpus,
         "comparisons": comparisons,
     }
     (output_dir / "pilot_report.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -229,7 +255,8 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
             f"{row['policy']:<12} {row['strength']:>8} {row['metric']:<30} {row['uncorrected_mean']:>11.2f} "
             f"{row['change_mean']:>8.2f} [{row['interval_low']:>8.2f}, {row['interval_high']:>8.2f}]"
         )
-    print(f"Uncorrected policies reproduce the earlier replay: {reproduces}")
+    print(f"Tasks per GPU: {gpus}")
+    print(f"Strength 0 matches uncorrected: {zero_matches}; uncorrected reproduces the earlier replay on {STUDY_GPU}: {reproduces}")
     print(f"Success ({PRIMARY_POLICY} divergence events fall at some strength): {summary['success']}; harmful strengths: {harms}")
     return summary
 
@@ -239,17 +266,15 @@ def main() -> None:
     parser.add_argument("step", choices=("run", "report"))
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--fold", type=int, choices=range(FOLDS), help="Required for run")
-    parser.add_argument("--gpu-folder", help="For report, e.g. NVIDIA_A100-SXM4-80GB")
+    parser.add_argument("--part", type=int, choices=range(PARTS), help="Required for run")
     args = parser.parse_args()
     config = load_kv_policy_experiment_config(args.config)
     if args.step == "run":
-        if args.fold is None:
-            parser.error("run needs --fold")
-        run(config, args.fold)
+        if args.fold is None or args.part is None:
+            parser.error("run needs --fold and --part")
+        run(config, args.fold, args.part)
     else:
-        if not args.gpu_folder:
-            parser.error("report needs --gpu-folder")
-        report(pilot_dir(config, args.gpu_folder), config.evaluation.max_prompts)
+        report(pilot_dir(config, STUDY_GPU), config.evaluation.max_prompts)
 
 
 if __name__ == "__main__":
