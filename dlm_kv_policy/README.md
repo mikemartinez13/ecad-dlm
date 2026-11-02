@@ -220,11 +220,14 @@ Two follow-ups, both pre-specified in `STALE_KV_ERROR_STUDY.md`:
   then `report`). It adds the fitted M4 correction to stale rows during the
   replay, at strengths 0.5 and 1.0. It measures paired changes in
   divergence events.
+- **Correction diagnostic** (`stale_kv_correction_diagnostic.py run --fold K
+  --part P`, then `report`). It asks why the correction did not help: whether
+  corrected K/V and attention outputs end up closer to dense.
 
-Both read the A100 80GB study's data from any GPU and write their results
+All three read the A100 80GB study's data from any GPU and write their results
 back to it. The rounding check runs on either size of A100 and stops unless
-the GPU reproduces the A100 80GB replay exactly. The pilot runs on any
-allowed GPU type, since each comparison stays on one GPU.
+the GPU reproduces the A100 80GB replay exactly. The pilot and diagnostic
+run on any allowed GPU type, since each comparison stays on one GPU.
 
 ## Implementation and experiment selection
 
@@ -248,6 +251,7 @@ allowed GPU type, since each comparison stays on one GPU.
 | `autoregressive_reference.py` | Qwen2.5-Coder-7B-Instruct time per task and pass@1 on the same tasks |
 | `stale_kv_error_study.py` | Whether stale K/V error is predictable; pre-registered in `STALE_KV_ERROR_STUDY.md` |
 | `stale_kv_correction_pilot.py` | Exploratory pilot: applies the fitted stale K/V correction during the replay |
+| `stale_kv_correction_diagnostic.py` | Why the correction did not help: corrected K/V and attention-output error against dense |
 
 All modes use `scripts/slurm/run_diffucoder_kv_policy_experiments.sh`:
 

@@ -29,19 +29,19 @@
 # the same GPU type; pin it with --constraint. So must collect and evaluate
 # of stale_kv_error_study, which read the forced-trajectory replay of that
 # type. Its rounding step runs on any A100 (--constraint="a100_80gb|a100_40gb")
-# and stale_kv_correction_pilot on any allowed GPU; both read the A100 80GB
-# study's data.
+# and stale_kv_correction_pilot and stale_kv_correction_diagnostic on any
+# allowed GPU; all read the A100 80GB study's data.
 
 set -euo pipefail
 
 PROGRAM="${1:-}"
 shift || true
 case "${PROGRAM}" in
-    output_variance_study|forced_trajectory_replay|decoding_oracles|autoregressive_reference|stale_kv_error_study|stale_kv_correction_pilot) ;;
+    output_variance_study|forced_trajectory_replay|decoding_oracles|autoregressive_reference|stale_kv_error_study|stale_kv_correction_pilot|stale_kv_correction_diagnostic) ;;
     *)
         echo "First argument must be output_variance_study, forced_trajectory_replay," \
-             "decoding_oracles, autoregressive_reference, stale_kv_error_study" \
-             "or stale_kv_correction_pilot" >&2
+             "decoding_oracles, autoregressive_reference, stale_kv_error_study," \
+             "stale_kv_correction_pilot or stale_kv_correction_diagnostic" >&2
         exit 2
         ;;
 esac

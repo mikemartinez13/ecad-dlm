@@ -440,6 +440,34 @@ stops unless every policy reproduces the A100 80GB replay's per-step token
 TV, KL and flips exactly. A rounding measurement therefore counts only if
 it was made with the study GPU's exact arithmetic. Each job records its GPU.
 
+### Rounding check result (2026-11-02)
+
+Slurm jobs 22330605–22330612: 48 tasks on A100 80GB, 16 on A100 40GB. Every
+stale-free cache equalled dense bitwise. The 40GB tasks reproduced the 80GB
+replay exactly; otherwise those jobs would have stopped.
+
+| Policy | Rounding share ρ (mean, max over layers) | Worst-case FER term | M4 FER → worst case | First moment | Second-moment flag |
+|---|---|---|---|---|---|
+| refresh_4 | 0.0076, 0.049 | 0.160 | 0.022 → −0.138 | weak → **not systematic** | yes → **no** |
+| refresh_32 | 0.0010, 0.0063 | 0.061 | 0.145 → 0.084 | weak → weak | yes → yes |
+| refresh_256 | 0.0002, 0.0010 | 0.026 | 0.409 → 0.383 | systematic → systematic | yes → yes |
+
+Worst-case S1 and S2: refresh_4 0.307 and 0.206; refresh_32 0.199 and 0.302;
+refresh_256 0.139 and 0.425. If rounding were uncorrelated with the stale
+error, the FER terms would be ρ instead: 0.008, 0.001 and 0.0002.
+
+**The check fails.** Criterion 2 required every policy to keep its
+classification, and refresh_4 does not: its worst-case rounding term is
+larger than its whole FER. The outcome under the worst case is still B, and
+both decision policies keep both classifications.
+
+**Record: "B, untrusted as registered. The follow-up rounding check failed,
+only on refresh_4, which is not a decision policy. On refresh_32 and
+refresh_256 the classification survives worst-case rounding."** Limiting the
+criterion to the decision policies would pass, but that choice would be made
+after seeing the result, so the outcome is not upgraded. The full-shape
+rerun described above would remove rounding instead of bounding it.
+
 ## Follow-up readouts (2026-11-01, from the registered data)
 
 These come from the held-out files the registered run already wrote. They
@@ -524,3 +552,70 @@ The success criterion is unchanged.
 Code: `stale_kv_correction_pilot.py run --fold K --part P`, then `report`.
 Outputs: `<run>/NVIDIA_A100-SXM4-80GB/stale_kv_correction_pilot/`, for
 tasks from every GPU.
+
+### Pilot result (2026-11-02)
+
+Slurm jobs 22330613–22330620: 16 tasks on A100 80GB, 48 on A40. **Pipeline
+passed:** strength 0 matched the uncorrected run exactly on all 64 tasks,
+and the A100 80GB tasks reproduced the earlier replay.
+
+Paired change per task, corrected minus uncorrected, with 97.5% intervals:
+
+| Policy | Uncorrected divergence events | @0.5 | @1.0 | Top-1 flips: uncorrected, @0.5, @1.0 |
+|---|---|---|---|---|
+| refresh_256 | 11.22 | −0.83 [−2.02, 0.22] | +1.70 [−0.22, 3.75] | 2.12, +0.00 [−0.30, 0.30], **+0.59 [0.20, 1.00]** |
+| refresh_32 | 8.42 | +0.12 [−0.55, 0.86] | +0.95 [−0.03, 2.08] | 1.81, +0.00 [−0.11, 0.11], −0.03 [−0.19, 0.14] |
+| refresh_4 | 2.56 | +0.19 [−0.02, 0.39] | +0.19 [−0.12, 0.50] | 0.55, +0.02 [0.00, 0.06], +0.05 [0.00, 0.11] |
+
+**No success:** neither strength reduces divergence events at refresh_256.
+Neither is harmful on the primary metric either, since both intervals
+include zero. At strength 1.0, top-1 flips at refresh_256 rise, with an
+interval above zero. By the rule above, a fixed correction does not reduce
+divergence events even at the longest staleness. Full results:
+`pilot_report.json`, `pilot_results.csv`.
+
+## Correction diagnostic (criteria fixed 2026-11-02, before it ran)
+
+**Question.** M4 removes part of the stale error energy on held-out data, so
+why did the correction not reduce divergence? Three explanations:
+- **compounding:** once corrections in earlier layers and steps change what
+  the cache holds, the corrected K/V are no longer closer to dense;
+- **not decision-relevant:** the corrected K/V are closer to dense, but each
+  layer's attention output is not;
+- **residual:** both are closer, but decisions still turn on the error M4
+  cannot predict. This does not separate unpredictable error from
+  second-moment structure.
+
+**Setup.** The pilot's replay, with each policy at strengths 0 (uncorrected),
+0.5 and 1.0. Per run and layer, summed over steps and tasks:
+- **K/V error:** stale rows' K/V at read time against the same step's dense
+  K/V, before and after the correction, before RoPE (RoPE preserves norms).
+- **Attention error:** attention outputs (the o_proj input) of the rows
+  computed that step, against dense.
+
+**Ratios to the uncorrected run** (layers 1–27, 97.5% bootstrap over tasks;
+below 1 means closer to dense):
+- **kv:** corrected K/V error after correction ÷ uncorrected K/V error;
+  keys and values are also reported separately.
+- **attention:** corrected attention error ÷ uncorrected.
+- **Descriptive decomposition,** kv = fit × drift. Fit is error after ÷
+  before within the corrected run. Drift is the corrected run's error before
+  correction ÷ the uncorrected run's.
+
+**Classification at refresh_256, separately at each strength:**
+1. kv interval not entirely below 1 → **compounding**.
+2. Otherwise, attention interval not entirely below 1 → **not
+   decision-relevant**.
+3. Otherwise → **residual**.
+
+refresh_32, refresh_4 and the per-layer ratios are reported, not classified.
+
+**Pipeline requirement.** The recorders only read. So on tasks that run on
+the same GPU type as the pilot did, every run's per-step token TV, KL and
+flips must equal the pilot's exactly. At least one task must be checked.
+The test suite also checks that the uncorrected K/V error equals the
+study's own stale error measurement on a small fake model.
+
+Code: `stale_kv_correction_diagnostic.py run --fold K --part P`, then
+`report`. Outputs:
+`<run>/NVIDIA_A100-SXM4-80GB/stale_kv_correction_diagnostic/`.

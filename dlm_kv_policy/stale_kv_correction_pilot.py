@@ -92,6 +92,9 @@ class StaleRowCorrection:
         self.edges = torch.tensor(AGE_EDGES, device=self.matrix.device)
         self.stop_ids = torch.tensor(sorted(stop_ids), device=self.matrix.device)
         self.prompt_length = 0
+        # Optional callback(layer, kind, positions, c, shift) with the stale rows'
+        # pre-RoPE c and the shift added to them; used by stale_kv_correction_diagnostic.py.
+        self.observer = None
         backend.kv_correction = self
 
     def start(self, prompt_length: int, length: int) -> None:
@@ -118,10 +121,14 @@ class StaleRowCorrection:
         for kind, (cached, pre_rope) in enumerate(((keys, self.store.keys[layer]), (values, self.store.values[layer]))):
             c = pre_rope[:, positions].float()  # [heads, rows, head_dim]
             e_hat = torch.einsum("hnoc,hnc->hno", self.matrix[layer, kind][:, combo], c) + self.intercept[layer, kind][:, combo]
+            # Scaling by 0.5 or 1 is exact, so the order of scaling and rotating does not change the result.
+            shift = self.strength * e_hat
+            if self.observer is not None:
+                self.observer(layer, kind, positions, c, shift)
             if kind == 0:
-                e_hat = e_hat * cos[0, positions] + _rotate_half(e_hat) * sin[0, positions]
+                shift = shift * cos[0, positions] + _rotate_half(shift) * sin[0, positions]
             adjusted = cached.clone()
-            adjusted[0, :, positions] = (cached[0, :, positions].float() + self.strength * e_hat).to(cached.dtype)
+            adjusted[0, :, positions] = (cached[0, :, positions].float() + shift).to(cached.dtype)
             corrected.append(adjusted)
         return corrected[0], corrected[1]
 
