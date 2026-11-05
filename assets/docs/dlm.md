@@ -92,7 +92,7 @@ Omit `--max-generations` to run the configured total. Use `--max-generations 0` 
 
 The shared default is `/scratch/<username>/ai4mat/ecad/results`, selected from the current username in `ecad/language_models/experiment_artifact_paths.py`. Residual-cache searches use `dlm_ecad/<run.name>/`; KV experiments use `dlm_kv_policy/<run.name>/`. The programs create their result directories automatically. Add `run.output_dir: /path/to/results` to override the search's output parent, or pass `--output-dir /path/to/results`. Keep the same location when resuming and scoring. The single-sample inference program accepts `--output /path/to/sample.json`.
 
-Slurm logs default to `/scratch/<username>/slurm-<job-name>-<job-id>.out`. Use `sbatch --output=/path/to/job.log` before the script name to change that path. The batch launchers also create Apptainer cache and temporary directories under the user's scratch area. No repository-local `results` or `scratch` directories or links are needed.
+Slurm logs go to `/scratch/<username>/ai4mat/ecad/logs/slurm-<job-name>-<job-id>.out`. Slurm does not create that directory, so create it once with `mkdir -p /scratch/$USER/ai4mat/ecad/logs`. Use `sbatch --output=/path/to/job.log` before the script name to change that path. The batch launchers also create Apptainer cache and temporary directories under the user's scratch area. No repository-local `results` or `scratch` directories or links are needed.
 
 The search saves proposed schedules before evaluation, generated responses before base tests, and metrics after scoring succeeds. With `run.resume: true`, resubmission reuses completed work and continues an interrupted generation. Keep the configuration and compatible GPU type unchanged when resuming.
 

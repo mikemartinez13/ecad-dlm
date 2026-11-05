@@ -83,8 +83,12 @@ class StaleRowCorrection:
     after RoPE, which is linear, so the key correction is rotated too.
     """
 
-    def __init__(self, backend: DiffuCoderActiveTokenKVBackend, fit: dict[str, torch.Tensor], strength: float, stop_ids: set[int]) -> None:
+    def __init__(
+        self, backend: DiffuCoderActiveTokenKVBackend, fit: dict[str, torch.Tensor], strength: float, stop_ids: set[int],
+        skipped_layers: tuple[int, ...] = (),
+    ) -> None:
         self.backend = backend
+        self.skipped_layers = skipped_layers
         self.store = PreRopeKV(backend)
         self.matrix = fit["m4_matrix"]  # [layers, kinds, heads, combos, head_dim, head_dim]
         self.intercept = fit["m4_intercept"]  # [layers, kinds, heads, combos, head_dim]
@@ -109,7 +113,7 @@ class StaleRowCorrection:
         return torch.bucketize(ages, self.edges, right=True) * len(ROW_TYPES) + types
 
     def __call__(self, layer: int, keys: torch.Tensor, values: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-        if layer < SCORED_FIRST_LAYER:
+        if layer < SCORED_FIRST_LAYER or layer in self.skipped_layers:
             return keys, values
         step = self.backend._step
         last = self.backend.cache.layer_last_refresh[layer, 0]

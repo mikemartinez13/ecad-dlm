@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from .active_token_kv_cache import ActiveTokenKVCache
+from .batched_row_index import gather_rows
 from .compute_cost import ModelShape, layer_flops, lm_head_flops
 from .cache_and_trajectory_diagnostics import KVCacheDiagnostics
 from .fixed_token_refresh_policy import TokenRefreshDecision
@@ -64,6 +65,9 @@ def _grouped_attention(
 class ActiveTokenForwardResult:
     mask_logits: torch.Tensor
     decision: TokenRefreshDecision
+    # Optional bool per row of mask_logits: which positions may be committed
+    # this step. None means all; set by masked_row_reuse_replay.py.
+    candidates: torch.Tensor | None = None
 
 
 class DiffuCoderActiveTokenKVBackend:
@@ -117,6 +121,9 @@ class DiffuCoderActiveTokenKVBackend:
         # that adjusts the cached K/V (post-RoPE keys) before attention reads
         # them, without changing the cache; used by stale_kv_correction_pilot.py.
         self.kv_correction = None
+        # Optional callback(layer_id, query, keys, values, mask) with the K/V
+        # attention reads; used by stale_kv_correction_diagnostic.py.
+        self.attention_observer = None
 
     def set_policy(self, policy: Any) -> None:
         policy.validate()
@@ -136,7 +143,11 @@ class DiffuCoderActiveTokenKVBackend:
     ) -> torch.Tensor | None:
         if not isinstance(attention_mask, torch.Tensor):
             return None
-        return attention_mask.index_select(2, positions)
+        if positions.ndim == 1:
+            return attention_mask.index_select(2, positions)
+        # Dummy queries use a real query's mask; their outputs are discarded.
+        indices = positions.clamp_min(0)[:, None, :, None]
+        return attention_mask.gather(2, indices.expand(-1, attention_mask.shape[1], -1, attention_mask.shape[-1]))
 
     def _attention(
         self,
@@ -158,8 +169,8 @@ class DiffuCoderActiveTokenKVBackend:
         values = attention.v_proj(normalized).view(batch, count, self.num_kv_heads, self.head_dim).transpose(1, 2)
         if self.kv_observer is not None:
             self.kv_observer(layer_id, positions, keys, values)
-        active_cos = cos.index_select(1, positions)
-        active_sin = sin.index_select(1, positions)
+        active_cos = gather_rows(cos, positions)
+        active_sin = gather_rows(sin, positions)
         query, keys = _apply_rope(query, keys, active_cos, active_sin)
 
         old_keys, old_values = self.cache.kv(layer_id)
@@ -180,6 +191,8 @@ class DiffuCoderActiveTokenKVBackend:
         if self.kv_correction is not None:
             all_keys, all_values = self.kv_correction(layer_id, all_keys, all_values, cos, sin)
         mask = self._select_mask(attention_mask, positions)
+        if self.attention_observer is not None:
+            self.attention_observer(layer_id, query, all_keys, all_values, mask)
         if self.grouped_gqa:
             output = _grouped_attention(query, all_keys, all_values, mask)
         else:
@@ -207,7 +220,7 @@ class DiffuCoderActiveTokenKVBackend:
         states: torch.Tensor,
         cache_age: torch.Tensor,
     ) -> None:
-        hidden = embedded.index_select(1, positions) if layer_id == 0 else self.cache.boundary(layer_id, positions)
+        hidden = gather_rows(embedded, positions) if layer_id == 0 else self.cache.boundary(layer_id, positions)
         hidden = self._attention(
             layer, layer_id, positions, hidden, cos, sin, attention_mask, states, cache_age
         )

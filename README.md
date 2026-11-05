@@ -128,7 +128,7 @@ python scripts/prepare_dlm_code_tasks.py \
   --seed 0 --prompt-style strict_python
 ```
 
-The launchers use the active environment's `python` and the repository where you submit the job. Adjust their Slurm partition, account, and GPU constraints for your cluster. Logs default to `/scratch/<username>/slurm-<job-name>-<job-id>.out`; override this with `sbatch --output=/path/to/job.log` if needed.
+The launchers use the active environment's `python` and the repository where you submit the job. Adjust their Slurm partition, account, and GPU constraints for your cluster. Logs go to `/scratch/<username>/ai4mat/ecad/logs/slurm-<job-name>-<job-id>.out`, which must exist before submitting (Slurm does not create it); override this with `sbatch --output=/path/to/job.log` if needed.
 
 ### Generate one DiffuCoder response
 

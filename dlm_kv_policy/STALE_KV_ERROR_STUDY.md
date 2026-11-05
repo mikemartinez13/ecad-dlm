@@ -619,3 +619,113 @@ study's own stale error measurement on a small fake model.
 Code: `stale_kv_correction_diagnostic.py run --fold K --part P`, then
 `report`. Outputs:
 `<run>/NVIDIA_A100-SXM4-80GB/stale_kv_correction_diagnostic/`.
+
+### Diagnostic result (2026-11-02)
+
+Slurm jobs 22333177–22333184, `raiselab-paid`. **Pipeline passed:** the 8
+tasks that ran on the pilot task's GPU type matched the pilot exactly.
+
+Ratios to the uncorrected run, layers 1–27 (97.5% intervals in
+`diagnostic_report.json`):
+
+| Policy, strength | Keys | Values | Attention | Fit | Drift |
+|---|---|---|---|---|---|
+| refresh_256 @0.5 | 0.49 | 0.71 | **1.25** | 0.52 | 1.12 |
+| refresh_256 @1.0 | 0.31 | 0.62 | **2.71** | 0.34 | 1.27 |
+| refresh_32 @0.5 | 0.60 | 0.81 | 0.74 | 0.67 | 1.04 |
+| refresh_32 @1.0 | 0.46 | 0.74 | 1.01 | 0.54 | 1.10 |
+| refresh_4 @0.5 | 0.81 | 0.93 | 0.91 | 0.88 | 1.00 |
+| refresh_4 @1.0 | 0.75 | 0.90 | 0.95 | 0.84 | 1.00 |
+
+**Classification at refresh_256: not decision-relevant, at both
+strengths.** The corrected K/V are much closer to dense, keys more so than
+values, and drift is small next to the fit's gain. But attention outputs
+are further from dense.
+
+**Per layer (descriptive), the damage starts at layer 4.** At refresh_256,
+attention error relative to uncorrected is 0.32–0.42 at layers 1–3 (half
+strength) and 0.19–0.27 (full). At layer 4 it is 5.2 and 19.2, although the
+K/V errors there fall as much as in other layers. Later layers stay worse:
+mostly 1.0–2.5 at half strength and 1.5–8 at full. refresh_32 shows the same
+step at layer 4, more weakly. Per-layer ratios: `diagnostic_by_layer.csv`.
+
+## Layer-4 test (criteria fixed 2026-11-02, before it ran)
+
+**Question.** Is the correction's harm caused at layer 4? If so, does the
+correction reduce divergence once layer 4 is left alone, and is layer 4's
+attention dominated by a few rows (attention sinks)?
+
+**Setup.** The diagnostic's replay, with every correction skipping layer 4
+(layers 1–3 and 5–27 corrected), at strengths 0, 0.5 and 1.0 for each
+policy. refresh_32 and refresh_256 also run the full correction at 0.5 and
+1.0, with an attention probe. At every corrected layer, the probe recomputes
+attention for the same queries twice, with the cached K/V and with the
+corrected K/V. It records:
+- the attention share of the most-attended key row, and how often that row
+  is position 0;
+- the total attention change (sum of |Δp|), and the fractions of it on the
+  most-attended row and on position 0;
+- how much of the attention-output change comes from keys versus values;
+- the output change relative to the output.
+
+**Primary (as in the pilot).** At refresh_256, with layer 4 skipped, the
+mean paired change in divergence events per task has a 97.5% bootstrap
+interval entirely below zero at strength 0.5 or 1.0.
+
+**Secondary.** The diagnostic's classification at refresh_256 with layer 4
+skipped. **Layer 4 is the cause** if the attention ratio over layers 1–27
+falls below 1, i.e. its 97.5% interval is entirely below 1.
+
+**Mechanism (descriptive; the thresholds are a reading, not a test).** In
+the full refresh_256 correction at strength 1.0, layer 4 reads as
+**sink-driven** if both hold:
+- its most-attended row takes more than half of the attention on average,
+  clearly more than at layers 1–3;
+- more than half of its attention change falls on that row.
+
+**Pipeline requirement.** On tasks run on the pilot task's GPU type, the
+uncorrected runs and the full-correction runs must match the pilot exactly.
+
+Code: `stale_kv_correction_diagnostic.py run --fold K --part P --skip-layers 4`,
+then `report --skip-layers 4`. Outputs:
+`<run>/NVIDIA_A100-SXM4-80GB/stale_kv_correction_diagnostic_skip4/`.
+
+### Layer-4 test result (2026-11-02)
+
+Slurm jobs 22347338–22347345, `raiselab-paid`; 64 tasks on A100 80GB, A100
+40GB and A40. **Pipeline passed:** the 8 tasks run on the pilot task's GPU
+type matched the pilot exactly.
+
+**Primary: fails.** Paired change in divergence events per task at
+refresh_256 with layer 4 skipped (uncorrected 11.69):
+- **Strength 0.5:** −0.59 [−1.61, 0.36].
+- **Strength 1.0:** +1.73 [0.09, 3.48], interval above zero, so harmful.
+
+refresh_32 at 1.0 is also harmful: +1.12 [0.05, 2.36].
+
+**Secondary: layer 4 is not the cause.** With layer 4 skipped, the attention
+ratio over layers 1–27 is still 1.22 [1.15, 1.31] at 0.5 and 2.58
+[2.41, 2.78] at 1.0. Skipping fixes layer 4 itself: its ratio is 0.88 at
+1.0, against 18.9 when corrected. But layers 5–27 stay about as damaged as
+with every layer corrected, 1.4–7.4 at strength 1.0. So the harm from layer 4
+onward arises in each layer, not by propagation from layer 4. Classification:
+not decision-relevant at both strengths.
+
+**Mechanism (descriptive), from the full refresh_256 correction at 1.0:**
+
+| | Layers 1–3 | Layers 4–27 |
+|---|---|---|
+| Attention share of the most-attended row | 0.17–0.21 | 0.38–0.68 |
+| Attention moved by the correction (sum of \|Δp\| per query) | 0.03–0.08 | 0.37–0.56 |
+| Share of that change on the most-attended row | 6–9% | 25–47% |
+| Share of the output change from keys | 16–51% | 75–96% |
+
+Position 0 is never the most-attended row. By the reading fixed beforehand,
+layer 4 is not "sink-driven": its top row takes 0.67 of attention, but only
+47% of the change, below one half. The finding is that from layer 4 on,
+attention is concentrated, and the key correction moves much of it, although
+it lowers the keys' total error. Which rows draw that attention was not
+recorded.
+
+Outputs: `diagnostic_report.json`, `diagnostic_by_layer.csv` and
+`attention_probe_by_layer.csv` in `stale_kv_correction_diagnostic_skip4/`.

@@ -25,6 +25,13 @@ layer, summed over steps:
   run --fold K --part P   GPU. Replays half of fold K's tasks.
   report                  Ratios to the uncorrected run, with intervals. No model.
 
+The layer-4 test adds --skip-layers 4 to both. The corrections then leave
+layer 4 alone, and refresh_32 and refresh_256 also run the full correction
+("<policy>@<strength>_full") with an attention probe. At every corrected layer
+the probe recomputes attention with the cached and with the corrected K/V,
+for the same queries. It records how concentrated attention is, where the
+change lands, and how much of the output change comes from keys or values.
+
 Usage (from the repository root; run inside a GPU allocation):
 
     python -m dlm_kv_policy.stale_kv_correction_diagnostic run \\
@@ -47,7 +54,15 @@ from .diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from .diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
 from .forced_trajectory_replay import load_top_p_logits, replay_task
 from .kv_policy_experiment_config import load_kv_policy_experiment_config
-from .stale_kv_correction_pilot import INTERVAL, PRIMARY_POLICY, STRENGTHS, StaleRowCorrection, pilot_dir
+from .stale_kv_correction_pilot import (
+    INTERVAL,
+    PRIMARY_POLICY,
+    STRENGTHS,
+    StaleRowCorrection,
+    paired_interval,
+    pilot_dir,
+    task_metrics,
+)
 from .stale_kv_error_study import (
     BOOTSTRAP_RESAMPLES,
     FOLDS,
@@ -63,10 +78,40 @@ from .stale_kv_error_study import (
 # Strength 0 is the uncorrected run every ratio is taken against.
 DIAGNOSED_STRENGTHS = (0.0, *STRENGTHS)
 SUM_KEYS = ("kv_before", "kv_after", "kv_dense", "attention_error", "attention_dense", "attention_rows")
+# In the layer-4 test these policies also run the full correction, probed.
+PROBED_POLICIES = ("refresh_32", "refresh_256")
+# Per layer, summed over steps, heads and query rows. "Before" attention uses
+# the cached K/V and "after" the corrected K/V; "top" is the key row with the
+# most attention before, and "first" is position 0. Output energies: key_part
+# changes keys only, value_part then changes values too.
+PROBE_KEYS = (
+    "queries", "top_share", "first_share", "first_is_top", "change", "change_at_top", "change_at_first",
+    "key_part", "value_part", "total_change", "output",
+)
 
 
-def diagnostic_dir(config: Any) -> Path:
-    return config.run.run_dir / STUDY_GPU / "stale_kv_correction_diagnostic"
+def diagnostic_dir(config: Any, skipped_layers: tuple[int, ...] = ()) -> Path:
+    name = "stale_kv_correction_diagnostic"
+    if skipped_layers:
+        name += "_skip" + "_".join(str(layer) for layer in skipped_layers)
+    return config.run.run_dir / STUDY_GPU / name
+
+
+def diagnosed_runs(policy_names: list[str], skipped_layers: tuple[int, ...] = ()) -> list[tuple[str, str, float, tuple[int, ...], bool]]:
+    """(label, policy, strength, skipped layers, probed) for each run.
+
+    Each policy runs at strengths 0, 0.5 and 1.0, its corrections skipping
+    skipped_layers. If any are skipped, the probed policies also run the full
+    correction, probed, labelled '<policy>@<strength>_full'.
+    """
+
+    runs = [(f"{name}@{strength}", name, strength, skipped_layers, False) for name in policy_names for strength in DIAGNOSED_STRENGTHS]
+    if skipped_layers:
+        runs += [
+            (f"{name}@{strength}_full", name, strength, (), True)
+            for name in policy_names if name in PROBED_POLICIES for strength in STRENGTHS
+        ]
+    return runs
 
 
 class AttentionOutputs:
@@ -106,12 +151,65 @@ def energy(x: torch.Tensor) -> torch.Tensor:
     return x.double().square().sum()
 
 
+def attention_effect(
+    query: torch.Tensor, keys: torch.Tensor, values: torch.Tensor, cached_keys: torch.Tensor, cached_values: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """How replacing the cached K/V by the corrected K/V changes one layer's attention (PROBE_KEYS).
+
+    query is [1, heads, rows, head_dim] and each K/V is [1, kv_heads, length, head_dim].
+    """
+
+    kv_heads = keys.shape[1]
+    groups = query.shape[1] // kv_heads
+    scale = query.shape[-1] ** -0.5
+    sums = {key: torch.zeros((), dtype=torch.float64, device=query.device) for key in PROBE_KEYS}
+    for head in range(kv_heads):
+        q = query[0, head * groups : (head + 1) * groups].float()
+        before = torch.softmax(q @ cached_keys[0, head].float().T * scale, dim=-1)  # [groups, rows, length]
+        after = torch.softmax(q @ keys[0, head].float().T * scale, dim=-1)
+        change = (after - before).abs()
+        top = before.argmax(dim=-1, keepdim=True)
+        output_before = before @ cached_values[0, head].float()
+        output_keys = after @ cached_values[0, head].float()
+        output_after = after @ values[0, head].float()
+        sums["queries"] += before.shape[0] * before.shape[1]
+        sums["top_share"] += before.amax(dim=-1).double().sum()
+        sums["first_share"] += before[..., 0].double().sum()
+        sums["first_is_top"] += top.eq(0).sum()
+        sums["change"] += change.double().sum()
+        sums["change_at_top"] += change.gather(-1, top).double().sum()
+        sums["change_at_first"] += change[..., 0].double().sum()
+        sums["key_part"] += energy(output_keys - output_before)
+        sums["value_part"] += energy(output_after - output_keys)
+        sums["total_change"] += energy(output_after - output_before)
+        sums["output"] += energy(output_before)
+    return sums
+
+
+class AttentionProbe:
+    """Sums attention_effect per layer, at every layer where the backend's K/V were corrected."""
+
+    def __init__(self, backend: DiffuCoderActiveTokenKVBackend, num_layers: int, device: Any) -> None:
+        self.backend = backend
+        self.sums = {key: torch.zeros(num_layers, dtype=torch.float64, device=device) for key in PROBE_KEYS}
+        backend.attention_observer = self.observe
+
+    def observe(self, layer: int, query: torch.Tensor, keys: torch.Tensor, values: torch.Tensor, mask: Any) -> None:
+        cached_keys, cached_values = self.backend.cache.kv(layer)
+        if keys is cached_keys and values is cached_values:
+            return  # nothing was corrected at this layer and step
+        if mask is not None:
+            raise ValueError("The attention probe assumes no attention mask (batch size one, no padding)")
+        for key, value in attention_effect(query, keys, values, cached_keys, cached_values).items():
+            self.sums[key][layer] += value
+
+
 class DiagnosedReplay:
     """Forced-trajectory replay of every policy at each strength, summing errors against dense."""
 
     def __init__(
         self, model: Any, dense_backend: Any, policies: dict[str, Any], fits: dict[str, dict[str, torch.Tensor]],
-        stop_ids: set[int], generation: Any, top_p_logits: Any,
+        stop_ids: set[int], generation: Any, top_p_logits: Any, runs: list[tuple] | None = None,
     ) -> None:
         attention = model.model.layers[0].self_attn
         num_layers = len(model.model.layers)
@@ -122,17 +220,18 @@ class DiagnosedReplay:
         self.dense = DenseWithPreRopeKV(dense_backend, attention.num_key_value_heads, attention.head_dim)
         self.dense_outputs = AttentionOutputs(model, self.dense)
         self.sampler = DiffuCoderDenoisingSampler(self.dense)
-        self.backends, self.outputs, self.sums, self.corrections = {}, {}, {}, []
-        for name, policy in policies.items():
-            for strength in DIAGNOSED_STRENGTHS:
-                label = f"{name}@{strength}"
-                backend = DiffuCoderActiveTokenKVBackend(model, policy)
-                correction = StaleRowCorrection(backend, fits[name], strength, stop_ids)
-                self.sums[label] = empty_sums(num_layers, device)
-                correction.observer = self.kv_observer(self.sums[label])
-                self.corrections.append(correction)
-                self.backends[label] = backend
-                self.outputs[label] = AttentionOutputs(model, backend)
+        self.runs = runs or diagnosed_runs(list(policies))
+        self.backends, self.outputs, self.sums, self.probes, self.corrections = {}, {}, {}, {}, []
+        for label, name, strength, skipped_layers, probed in self.runs:
+            backend = DiffuCoderActiveTokenKVBackend(model, policies[name])
+            correction = StaleRowCorrection(backend, fits[name], strength, stop_ids, skipped_layers)
+            self.sums[label] = empty_sums(num_layers, device)
+            correction.observer = self.kv_observer(self.sums[label])
+            self.corrections.append(correction)
+            self.backends[label] = backend
+            self.outputs[label] = AttentionOutputs(model, backend)
+            if probed:
+                self.probes[label] = AttentionProbe(backend, num_layers, device)
 
     def kv_observer(self, sums: dict[str, torch.Tensor]):
         def observe(layer: int, kind: int, positions: torch.Tensor, c: torch.Tensor, shift: torch.Tensor) -> None:
@@ -160,7 +259,7 @@ class DiagnosedReplay:
                 sums["attention_rows"][layer] += rows.numel()
 
     def run(self, prompt: torch.Tensor, attention_mask: torch.Tensor) -> dict[str, Any]:
-        for sums in self.sums.values():
+        for sums in [*self.sums.values(), *(probe.sums for probe in self.probes.values())]:
             for tensor in sums.values():
                 tensor.zero_()
         for correction in self.corrections:
@@ -171,11 +270,11 @@ class DiagnosedReplay:
         )
 
 
-def run(config: Any, fold: int, part: int) -> None:
+def run(config: Any, fold: int, part: int, skipped_layers: tuple[int, ...] = ()) -> None:
     study = Study(config, STUDY_GPU)
     gpu = gpu_folder_name()
-    study.write_job_info("diagnostic", fold, part)
-    output_dir = diagnostic_dir(config)
+    output_dir = diagnostic_dir(config, skipped_layers)
+    study.write_job_info(output_dir.name, fold, part)
     device = config.model.device
     fits = {}
     for name in POLICIES:
@@ -184,24 +283,36 @@ def run(config: Any, fold: int, part: int) -> None:
     replay = DiagnosedReplay(
         study.model, DenseDiffuCoderBaseline(study.model), {name: config.dkv_policies[name] for name in POLICIES},
         fits, study.stop_ids, config.generation, load_top_p_logits(study.model),
+        diagnosed_runs(list(POLICIES), skipped_layers),
     )
+    # Runs that correct every layer, or nothing, are the pilot's runs under another label.
+    pilot_labels = {
+        label: f"{name}@{strength}" for label, name, strength, skipped, _ in replay.runs if not skipped or strength == 0
+    }
 
     indices = study.part_tasks(fold, part)
     for count, index in enumerate(indices):
         prompt, attention_mask, _, saved = study.task_inputs(index)
         pilot = json.loads((pilot_dir(config, STUDY_GPU) / "tasks" / f"task_{index:03d}.json").read_text())
         result = replay.run(prompt, attention_mask)
-        # The recorders only read, so on the pilot task's GPU type every run must equal the pilot's.
+        # The recorders only read, so on the pilot task's GPU type those runs must equal the pilot's.
         matches_pilot = None
         if gpu == pilot["gpu"]:
-            matches_pilot = all(same_steps(result["policies"][label], pilot["steps"][label]) for label in replay.backends)
+            matches_pilot = all(
+                same_steps(result["policies"][label], pilot["steps"][pilot_label]) for label, pilot_label in pilot_labels.items()
+            )
         record = {
             "task_id": study.tasks[index].task_id,
             "fold": fold,
             "gpu": gpu,
             "pilot_gpu": pilot["gpu"],
             "matches_pilot": matches_pilot,
+            "skipped_layers": list(skipped_layers),
+            "metrics": {label: task_metrics(rows) for label, rows in result["policies"].items()},
             "sums": {label: {key: tensor.cpu().tolist() for key, tensor in sums.items()} for label, sums in replay.sums.items()},
+            "probe": {
+                label: {key: tensor.cpu().tolist() for key, tensor in probe.sums.items()} for label, probe in replay.probes.items()
+            },
         }
         path = output_dir / "tasks" / f"task_{index:03d}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -211,9 +322,11 @@ def run(config: Any, fold: int, part: int) -> None:
             return float(replay.sums[label][key][SCORED_FIRST_LAYER:].sum())
 
         base = f"{PRIMARY_POLICY}@0.0"
-        ratios = " ".join(
+        events = record["metrics"]
+        ratios = f"divergence events {events[base]['divergence_events']:.1f} uncorrected; " + " ".join(
             f"@{strength}: K/V {scored(f'{PRIMARY_POLICY}@{strength}', 'kv_after') / scored(base, 'kv_after'):.3f}, "
-            f"attention {scored(f'{PRIMARY_POLICY}@{strength}', 'attention_error') / scored(base, 'attention_error'):.3f};"
+            f"attention {scored(f'{PRIMARY_POLICY}@{strength}', 'attention_error') / scored(base, 'attention_error'):.3f}, "
+            f"events {events[f'{PRIMARY_POLICY}@{strength}']['divergence_events']:.1f};"
             for strength in STRENGTHS
         )
         print(
@@ -293,15 +406,58 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
                     "uncorrected_attention_relative_error": float(base["attention_error"] / base["attention_dense"]),
                 })
 
+    # Paired change in divergence events per task, as in the pilot (recorded since the layer-4 test).
+    divergence = {}
+    if "metrics" in records[0]:
+        for name in POLICIES:
+            base = np.array([record["metrics"][f"{name}@0.0"]["divergence_events"] for record in records])
+            for strength in STRENGTHS:
+                change = np.array([record["metrics"][f"{name}@{strength}"]["divergence_events"] for record in records]) - base
+                low, high = paired_interval(change, rng, INTERVAL)
+                divergence[f"{name}@{strength}"] = {
+                    "uncorrected_mean": float(base.mean()), "change_mean": float(change.mean()),
+                    "interval_low": low, "interval_high": high,
+                }
+        comparisons_primary = [divergence[f"{PRIMARY_POLICY}@{strength}"] for strength in STRENGTHS]
+
+    # Attention probe, per probed run and layer, as means per query row and head.
+    probe_rows = []
+    for label in records[0].get("probe", {}):
+        totals = {key: sum(np.asarray(record["probe"][label][key]) for record in records) for key in PROBE_KEYS}
+        for layer in range(SCORED_FIRST_LAYER, len(totals["queries"])):
+            t = {key: float(value[layer]) for key, value in totals.items()}
+            if t["queries"] == 0:
+                continue
+            probe_rows.append({
+                "run": label, "layer": layer,
+                "top_share": t["top_share"] / t["queries"],
+                "first_share": t["first_share"] / t["queries"],
+                "first_is_top": t["first_is_top"] / t["queries"],
+                "change": t["change"] / t["queries"],
+                "change_at_top_fraction": t["change_at_top"] / t["change"],
+                "change_at_first_fraction": t["change_at_first"] / t["change"],
+                "key_part_fraction": t["key_part"] / (t["key_part"] + t["value_part"]),
+                "relative_output_change": t["total_change"] / t["output"],
+            })
+
     checked = [record["matches_pilot"] for record in records if record["matches_pilot"] is not None]
     summary = {
         "primary_policy": PRIMARY_POLICY,
         "interval": INTERVAL,
+        "skipped_layers": records[0].get("skipped_layers", []),
         "explanation": {strength: comparisons[f"{PRIMARY_POLICY}@{strength}"]["explanation"] for strength in STRENGTHS},
         "pipeline_passed": bool(checked) and all(checked),
         "tasks_checked_against_pilot": len(checked),
         "comparisons": comparisons,
+        "divergence_events": divergence,
     }
+    if divergence:
+        summary["success"] = any(entry["interval_high"] < 0 for entry in comparisons_primary)
+    if probe_rows:
+        path = output_dir / "attention_probe_by_layer.csv"
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write(",".join(probe_rows[0]) + "\n")
+            handle.writelines(",".join(str(value) for value in row.values()) + "\n" for row in probe_rows)
     (output_dir / "diagnostic_report.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     for path, table in ((output_dir / "diagnostic_results.csv", rows), (output_dir / "diagnostic_by_layer.csv", layer_rows)):
         with path.open("w", encoding="utf-8") as handle:
@@ -314,8 +470,22 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
             f"{row['policy']:<12} {row['strength']:>8} {row['quantity']:<10} {row['ratio']:>7.3f} "
             f"[{row['interval_low']:>7.3f}, {row['interval_high']:>7.3f}]"
         )
+    for label, entry in divergence.items():
+        print(
+            f"divergence events {label:<16} uncorrected {entry['uncorrected_mean']:6.2f} change {entry['change_mean']:+6.2f} "
+            f"[{entry['interval_low']:+6.2f}, {entry['interval_high']:+6.2f}]"
+        )
+    for row in probe_rows:
+        if row["run"] == f"{PRIMARY_POLICY}@1.0_full":
+            print(
+                f"probe {row['run']} layer {row['layer']:2d}: top share {row['top_share']:.2f}, first is top {row['first_is_top']:.2f}, "
+                f"change {row['change']:.3f} ({row['change_at_top_fraction']:.0%} at top row), key part {row['key_part_fraction']:.0%}, "
+                f"output change {row['relative_output_change']:.3f}"
+            )
     print(f"Runs match the pilot exactly on {len(checked)} tasks run on the pilot's GPU type: {summary['pipeline_passed']}")
     print(f"Explanation at {PRIMARY_POLICY}: {summary['explanation']}")
+    if divergence:
+        print(f"Success ({PRIMARY_POLICY} divergence events fall at some strength): {summary['success']}")
     return summary
 
 
@@ -325,14 +495,16 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--fold", type=int, choices=range(FOLDS), help="Required for run")
     parser.add_argument("--part", type=int, choices=range(PARTS), help="Required for run")
+    parser.add_argument("--skip-layers", type=int, nargs="+", default=[], help="Layers left uncorrected (the layer-4 test: 4)")
     args = parser.parse_args()
     config = load_kv_policy_experiment_config(args.config)
+    skipped_layers = tuple(args.skip_layers)
     if args.step == "run":
         if args.fold is None or args.part is None:
             parser.error("run needs --fold and --part")
-        run(config, args.fold, args.part)
+        run(config, args.fold, args.part, skipped_layers)
     else:
-        report(diagnostic_dir(config), config.evaluation.max_prompts)
+        report(diagnostic_dir(config, skipped_layers), config.evaluation.max_prompts)
 
 
 if __name__ == "__main__":

@@ -74,15 +74,7 @@ NEAR_TIE_MARGIN = 0.1
 POSITION_TIE_MARGIN = 0.01
 
 
-def entropy_confidence(logits: torch.Tensor, temperature: float, top_p: float, top_p_logits) -> torch.Tensor:
-    """DiffuCoder's 'entropy' confidence (negative entropy), without sampling a token."""
-
-    if temperature > 0:
-        logits = logits / temperature
-    if top_p < 1:
-        logits = top_p_logits(logits, top_p)
-    probs = torch.softmax(logits, dim=-1)
-    return torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
+from .entropy_confidence import entropy_confidence
 
 
 def decoding_distribution(logits: torch.Tensor, temperature: float, top_p: float, top_p_logits) -> torch.Tensor:
@@ -228,10 +220,7 @@ def replay_task(
         )
         mask_index = x.eq(mask_token_id)
         dense_logits = sampler.backend.forward_mask_logits(**forward_inputs).mask_logits
-        cached_logits = {
-            name: backend.forward_mask_logits(**forward_inputs).mask_logits
-            for name, backend in cached_backends.items()
-        }
+        cached = {name: backend.forward_mask_logits(**forward_inputs) for name, backend in cached_backends.items()}
         if on_step is not None:
             on_step(step, x, state)
 
@@ -256,11 +245,14 @@ def replay_task(
             continue
 
         dense_confidence = entropy_confidence(dense_logits, generation.temperature, generation.top_p, top_p_logits)
-        for name, logits in cached_logits.items():
-            confidence = entropy_confidence(logits, generation.temperature, generation.top_p, top_p_logits)
+        for name, result in cached.items():
+            confidence = entropy_confidence(result.mask_logits, generation.temperature, generation.top_p, top_p_logits)
+            if result.candidates is not None:
+                # Positions the policy did not recompute cannot be committed this step.
+                confidence = confidence.masked_fill(~result.candidates, -torch.inf)
             metrics = step_metrics(
                 dense_logits,
-                logits,
+                result.mask_logits,
                 committed_rows,
                 confidence,
                 dense_confidence=dense_confidence,
@@ -268,6 +260,10 @@ def replay_task(
                 top_p=generation.top_p,
                 top_p_logits=top_p_logits,
             )
+            if result.candidates is not None:
+                # Generated positions the dense model committed outside the candidates.
+                outside = committed_rows[~result.candidates[committed_rows]]
+                metrics["outside_positions"] = (mask_index[0].nonzero()[outside, 0] - prompt.shape[1]).tolist()
             per_policy[name].append({"step": step, **metrics})
 
     generated = x[0, prompt.shape[1] :].tolist()

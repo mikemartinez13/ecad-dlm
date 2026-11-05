@@ -83,10 +83,11 @@ class DKVDecodeRefreshPolicy:
         step: int,
         total_steps: int,
         num_layers: int,
+        collect_counts: bool = True,
     ) -> TokenRefreshDecision:
         del token_cache_age
-        if states.ndim != 2 or states.shape[0] != 1:
-            raise ValueError("dKV-Decode reference supports batch size one")
+        if states.ndim != 2:
+            raise ValueError("states must have shape [batch, sequence]")
         valid = ~states.eq(int(DenoisingTokenCategory.PAD))
         depths = torch.full_like(states, self.refresh_depth, dtype=torch.long).clamp(
             max=num_layers
@@ -117,12 +118,12 @@ class DKVDecodeRefreshPolicy:
                 prompt = states.eq(int(DenoisingTokenCategory.PROMPT))
                 active |= prompt
             local = torch.zeros_like(active)
-            if self.local_refresh_radius and newly_decoded.any():
-                centers = torch.where(newly_decoded[0])[0]
-                positions = torch.arange(states.shape[1], device=states.device)
-                local[0] = (positions[:, None] - centers[None, :]).abs().le(
-                    self.local_refresh_radius
-                ).any(dim=1)
+            if self.local_refresh_radius:
+                radius = min(self.local_refresh_radius, states.shape[1] - 1)
+                local = newly_decoded.clone()
+                for offset in range(1, radius + 1):
+                    local[:, offset:] |= newly_decoded[:, :-offset]
+                    local[:, :-offset] |= newly_decoded[:, offset:]
                 local &= valid
                 active |= local
             # refresh_depth is one-based: depth 1 recomputes every layer.
@@ -132,16 +133,16 @@ class DKVDecodeRefreshPolicy:
                 active=active,
                 refresh_depth=depths,
                 reasons={
-                    "mask": int(mask.sum().item()),
-                    "decode_delay": int(delayed.sum().item()),
-                    "depth_stable": int(depth_stable.sum().item()),
-                    "prompt": int(prompt.sum().item()),
-                    "local": int(local.sum().item()),
-                    "cached_stable": int((valid & ~active).sum().item()),
+                    "mask": (int(mask.sum().item()) if collect_counts else 0),
+                    "decode_delay": (int(delayed.sum().item()) if collect_counts else 0),
+                    "depth_stable": (int(depth_stable.sum().item()) if collect_counts else 0),
+                    "prompt": (int(prompt.sum().item()) if collect_counts else 0),
+                    "local": (int(local.sum().item()) if collect_counts else 0),
+                    "cached_stable": (int((valid & ~active).sum().item()) if collect_counts else 0),
                 },
             )
         return TokenRefreshDecision(
             active=valid,
             refresh_depth=torch.ones_like(depths),
-            reasons={reason: int(valid.sum().item())},
+            reasons={reason: (int(valid.sum().item()) if collect_counts else 0)},
         )

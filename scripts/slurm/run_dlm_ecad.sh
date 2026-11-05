@@ -11,7 +11,7 @@
 # PyTorch 2.4.1+cu124 in ecad-dlm supports CUDA architectures through sm_90;
 # exclude Blackwell GPUs until this environment is upgraded for them.
 #SBATCH --constraint="a100|a40|a6000"
-#SBATCH --output=/scratch/%u/slurm-%x-%j.out
+#SBATCH --output=/scratch/%u/ai4mat/ecad/logs/slurm-%x-%j.out
 
 set -euo pipefail
 

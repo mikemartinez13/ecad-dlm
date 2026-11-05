@@ -276,7 +276,8 @@ evaluation, ablations, resumable KV evolution, and held-out EvalPlus scoring.
 Saved artifacts default to `/scratch/<username>/ai4mat/ecad/results/dlm_kv_policy`.
 The runner creates each run directory. Override the parent with YAML
 `run.output_dir` or the `--output-dir /path/to/results` command-line option.
-Slurm logs default to `/scratch/<username>/slurm-<job-name>-<job-id>.out`. See the
+Slurm logs go to `/scratch/<username>/ai4mat/ecad/logs/slurm-<job-name>-<job-id>.out`;
+the directory must exist before submitting. See the
 [shared DLM guide](../assets/docs/dlm.md) for setup and the retained tests.
 
 ## Full paired EvalPlus-base dKV evaluation
@@ -423,3 +424,115 @@ sbatch --constraint=a40 --time=04:00:00 \
 The backend is batch-size one because each prompt has a different active-row
 set. It is not a general DLM framework. The implementation supports fixed-policy studies and categorical evolutionary
 search; specialized kernels remain a separate extension.
+
+## Batched DiffuCoder backend
+
+Michael, the batched implementation lives alongside the batch-one reference:
+
+- `batched_diffucoder_backend.BatchedDiffuCoderKVBackend` subclasses the existing
+  backend and calls its `_layer_forward`/`_attention`; it changes row orchestration,
+  not transformer arithmetic. `_repeat_kv` supports torch 2.4.1+cu124.
+- `batched_active_token_cache.py` stores per-request K/V and final hidden states,
+  an optional starting-layer boundary, and one transient hidden workspace.
+  With depth 22, only boundary 21 persists. Dummy rows never write to real slots.
+- `masked_row_reuse_policy.py` is shared with replay (the old import remains valid).
+  Any positive integer `window` is supported, including windows not dividing the
+  base refresh interval. Base full refreshes always take precedence.
+- `BatchedDenseDiffuCoderBaseline` calls the loaded native decoder core and projects
+  only masked-position predecessors. The existing full-head baseline remains the
+  numerical reference for rung 1.
+- `DiffuCoderDenoisingSampler` supports both paths. Batched decoding currently
+  requires greedy entropy, top_p=1 and top_k=null. It computes the float32 transfer
+  schedule once, preserving truncation, and keeps required decode state on-device.
+  Generation fails if the model emits MASK and violates the common schedule.
+
+Use the existing loader; do not patch checkpoint files or Hugging Face caches:
+
+```python
+from dlm_kv_policy.batched_decoding_study import build_backend
+from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
+from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
+
+base = DKVDecodeRefreshPolicy(cache_reloading_step=8, refresh_depth=22)
+backend = build_backend(model, base=base, window=2, stop_ids={tokenizer.eos_token_id}, m=32)
+sampler = DiffuCoderDenoisingSampler(backend)
+# sampler.generate(prompt_ids, attention_mask=prompt_mask, ...) uses the existing API.
+```
+
+For research runs, `python -m dlm_kv_policy.batched_decoding_study --help` exposes
+`--base`, `--window`, `--m`, `--batch-size`, `--verify-b1`, and `--evalplus`.
+Omit `--window` for the base alone; use `--base dense` for the native dense arm.
+Use a separate empty output directory for every arm/batch size. The runner stores
+length-sorted batch manifests, full task records, commit and dirty-source hashes,
+configuration, torch/CUDA/GPU identity, generated tokens, optional per-step
+batch-one identity checks, row diagnostics, and peak allocated GPU memory for
+every padded batch. `--evalplus` scores base and full/plus scopes separately.
+Change the config's task manifest and max_prompts for full datasets; the provided
+64-task config remains the subset. This is a fidelity runner, not a speed benchmark.
+
+After Michael approves GPU validation, proceed through the correctness ladder:
+1. `--base dense --batch-size 1 --verify-b1` against native full-head dense.
+2. Dense at batch 8/16, compared by task ID to unbatched outcomes and E3 noise.
+3. `--base refresh_256 --batch-size 1 --verify-b1`.
+4. The base with `--window 2` (and other intended windows), batch 1, `--verify-b1`.
+5. All intended policies at batch 8/16, paired by task ID; evaluate base and plus tests.
+
+CPU tests cover per-step batch-one identity, multiple windows/depths, independent
+padded forced trajectories, dummy-write exclusion, stable ties, and diagnostic
+on/off equivalence. They do not certify bf16 GPU identity or speed.
+
+For uninstrumented generation set `collect_diagnostics=False` and
+`collect_history=False`. Policy count `.item()` calls and CPU history copies are
+then disabled. Row packing still uses two count synchronizations per step (three
+with depth), and boolean gather/scatter can synchronize internally. Those costs,
+the full-key `_repeat_kv` traffic, and padded-key attention must remain in future
+end-to-end timing. Retaining the original all-masked-predecessor head also leaves
+that head's cost on cheap steps. Register the speed target before timing; no speed
+claim follows from implementing the backend.
+
+## Registered proxy re-check and batch-cost calibration (2026-11-04)
+
+Michael authorized both precursor studies. `proxy_recheck.py` prepares the audited
+96-task manifest, runs four resumable GPU task shards, and scores/reports results
+on CPU. Full registration is in `PROXY_VALIDATION.md`; the new ranking gate is
+Spearman >=0.90 overall and within the depth family, AUROC >=0.75.
+
+`batched_cost_model.py` is a separate engineering calibration, using the batched
+backend rather than assuming its gather/scatter overhead is negligible. It first
+checks B=1 identity against legacy generation for all panel policies on the first
+manifest task; padded B=8/16 native-versus-full-refresh logits must be finite with
+relative L2 <=0.01. These checks do not establish batch-invariant pass@1.
+
+Before any new timing data, the cost protocol is frozen as follows:
+- A100 SXM4 80GB, one allocated GPU; B=1,8,16; context buckets 384,512,640,768
+  (the manifest's total lengths are 347..727). Model dtype bf16.
+- Independently measure layer blocks [0,17), [17,21), [21,23), [23,28) and LM head.
+  Decoder row grid: 0,1,2,4,8,16,24,32,48,64,96,128,160,192,224,256,L.
+  Head uses 0..256 on the same grid. Zero-row decoder/head cost is exactly zero.
+  Both mask-free and padded-key-mask paths are measured. No extrapolation.
+- CUDA events, synchronization, 2 warmups, median of 5 repeats. Retain individual
+  samples and synchronized wall time. This is calibration, not the later three-
+  repeat generation benchmark or its still-unregistered speed-success target.
+- Twelve fixed synthetic schedules in `batched_cost_model.CASES`, eight steps each,
+  test depths 1,18,22,24; unseen row counts; equal/unequal requests; refresh every
+  4 or 8 steps. Calibrate at context 640 and 768 for each batch size. Schedules
+  use per-request different positions and valid-only cache writes, with decreasing
+  masked-head rows. The initial cache population is excluded in both predictions
+  and measurements; scheduled refresh steps are included.
+- Predict by summing block costs at the *per-block batch maximum* row count plus
+  the head cost at the remaining masked count. Replay projections length-sort the
+  fixed manifest, conservatively round context up to a calibrated bucket, and
+  report that rounding. They never average individual-task speedups.
+- **Calibration gate, separately at each B:** median absolute relative error <=10%,
+  p90 <=20%, and Spearman >=0.95. All three batch sizes must pass. This ranking
+  threshold is separate from the proxy's >=0.90. Calibration records are held
+  out from table fitting. Do not refit on them and call that a validation pass.
+- Predictions exclude policy/sampler overhead; calibration includes the real
+  backend's selection, packing, gathers/scatters and head but no sampler. Record
+  the discrepancy and peak allocated memory. These are predicted model-compute
+  times, not a measured decoding speedup claim. Failure is a useful result and
+  blocks using the model unqualified as an evolutionary speed objective.
+
+Runs use immutable source/config/task snapshots with hashes and separate output
+directories; historical studies are not overwritten. No production backend code
+or decision rule is changed based on new results without recording an amendment.

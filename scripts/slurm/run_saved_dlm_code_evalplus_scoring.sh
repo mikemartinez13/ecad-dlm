@@ -9,7 +9,7 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="b200|a100|a40|a6000|rtxpro6000"
-#SBATCH --output=/scratch/%u/slurm-%x-%j.out
+#SBATCH --output=/scratch/%u/ai4mat/ecad/logs/slurm-%x-%j.out
 
 set -euo pipefail
 

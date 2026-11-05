@@ -10,7 +10,7 @@
 #SBATCH --constraint="a100|a6000|a40"
 #SBATCH --mail-user=gqs7zr@virginia.edu
 #SBATCH --mail-type=END,FAIL
-#SBATCH --output=/scratch/%u/slurm-%x-%j.out
+#SBATCH --output=/scratch/%u/ai4mat/ecad/logs/slurm-%x-%j.out
 
 # Runs one diagnostic program. The first argument names it; the rest is
 # passed through. Results are stored per GPU type, so any allowed GPU is safe;
@@ -31,17 +31,36 @@
 # type. Its rounding step runs on any A100 (--constraint="a100_80gb|a100_40gb")
 # and stale_kv_correction_pilot and stale_kv_correction_diagnostic on any
 # allowed GPU; all read the A100 80GB study's data.
+#
+#   sbatch --constraint=a100_80gb dlm_kv_policy/scripts/slurm/run_diffucoder_kv_diagnostics.sh \
+#     masked_row_smoothness_study run --arm cadd_on
+# The arms (cadd_on, cadd_off, diffucoder_base, diffucoder) must run on one GPU type.
+#
+#   sbatch --constraint=a100_80gb dlm_kv_policy/scripts/slurm/run_diffucoder_kv_diagnostics.sh \
+#     commit_position_study run --config dlm_kv_policy/configs/<greedy config>.yaml
+#   (same for batched_row_timing --config ...). Both read the A100 80GB replay's
+#   dense outputs, so run them on that GPU type. Submit from a shell with no SLURM_*
+#   variables if you are inside an interactive allocation.
+#
+#   sbatch dlm_kv_policy/scripts/slurm/run_diffucoder_kv_diagnostics.sh \
+#     masked_row_reuse_replay run --config dlm_kv_policy/configs/<greedy config>.yaml --part 0
+#   (parts 0-3). Any allowed GPU; each task is compared with refresh_256 in the same run.
+#   Then `masked_row_reuse_replay generate --config ...` (one job, any GPU) for
+#   end-to-end pass@1 of dense, refresh_256 and the reuse policies. Add
+#   `--base depth_22` to run, report and generate for Step 3.
 
 set -euo pipefail
 
 PROGRAM="${1:-}"
 shift || true
 case "${PROGRAM}" in
-    output_variance_study|forced_trajectory_replay|decoding_oracles|autoregressive_reference|stale_kv_error_study|stale_kv_correction_pilot|stale_kv_correction_diagnostic) ;;
+    output_variance_study|forced_trajectory_replay|decoding_oracles|autoregressive_reference|stale_kv_error_study|stale_kv_correction_pilot|stale_kv_correction_diagnostic|masked_row_smoothness_study|commit_position_study|batched_row_timing|masked_row_reuse_replay|batched_decoding_study) ;;
     *)
         echo "First argument must be output_variance_study, forced_trajectory_replay," \
              "decoding_oracles, autoregressive_reference, stale_kv_error_study," \
-             "stale_kv_correction_pilot or stale_kv_correction_diagnostic" >&2
+             "stale_kv_correction_pilot, stale_kv_correction_diagnostic or" \
+             "masked_row_smoothness_study, commit_position_study, batched_row_timing" \
+             "or masked_row_reuse_replay" >&2
         exit 2
         ;;
 esac

@@ -185,8 +185,11 @@ class DiffuCoderKVPolicyEvaluator:
         """Generate one task set with either stock dense or active-row execution."""
 
         tasks = self.tasks if tasks is None else tasks
+        # A policy that needs its own backend (masked_row_reuse_replay.py) makes it.
         backend = (
-            DiffuCoderActiveTokenKVBackend(
+            policy.make_backend(self.model)
+            if hasattr(policy, "make_backend")
+            else DiffuCoderActiveTokenKVBackend(
                 self.model,
                 policy,
                 collect_diagnostics=collect_diagnostics,

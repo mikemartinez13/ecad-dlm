@@ -18,7 +18,7 @@ class DenoisingTokenCategory(IntEnum):
 
 @dataclass
 class DenoisingTokenState:
-    """State immediately before one denoising forward, for batch size one."""
+    """State immediately before one denoising forward; storage stays on its creation device."""
 
     prompt_mask: torch.Tensor
     generated_mask: torch.Tensor
@@ -32,21 +32,22 @@ class DenoisingTokenState:
         full_width: int,
         attention_mask: torch.Tensor | None,
         mask_token_id: int,
+        *, batch_size: int = 1, device: torch.device | str = "cpu",
     ) -> "DenoisingTokenState":
         if attention_mask is None:
-            prompt = torch.ones((1, input_width), dtype=torch.bool)
+            prompt = torch.ones((batch_size, input_width), dtype=torch.bool, device=device)
         else:
-            if attention_mask.shape != (1, input_width):
-                raise ValueError("DenoisingTokenState requires batch_size=1 attention masks")
-            prompt = attention_mask.to(dtype=torch.bool, device="cpu")
-        prompt_mask = torch.zeros((1, full_width), dtype=torch.bool)
+            if attention_mask.ndim != 2 or attention_mask.shape[1] != input_width:
+                raise ValueError("attention mask width must match prompt width")
+            prompt = attention_mask.to(dtype=torch.bool, device=device)
+        prompt_mask = torch.zeros((prompt.shape[0], full_width), dtype=torch.bool, device=device)
         prompt_mask[:, :input_width] = prompt
         generated_mask = torch.zeros_like(prompt_mask)
         generated_mask[:, input_width:] = True
         return cls(
             prompt_mask=prompt_mask,
             generated_mask=generated_mask,
-            decode_step=torch.full((1, full_width), -1, dtype=torch.long),
+            decode_step=torch.full((prompt.shape[0], full_width), -1, dtype=torch.long, device=device),
             mask_token_id=mask_token_id,
         )
 
@@ -92,4 +93,4 @@ class DenoisingTokenState:
         )
         decode_step = self.decode_step.to(previous_tokens.device)
         decode_step[newly] = step
-        self.decode_step = decode_step.cpu()
+        self.decode_step = decode_step.to(self.prompt_mask.device)

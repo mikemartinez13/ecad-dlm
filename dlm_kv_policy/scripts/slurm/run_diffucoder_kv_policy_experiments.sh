@@ -10,7 +10,7 @@
 #SBATCH --constraint="a100|a40|a6000"
 #SBATCH --mail-user=gqs7zr@virginia.edu
 #SBATCH --mail-type=END,FAIL
-#SBATCH --output=/scratch/%u/slurm-%x-%j.out
+#SBATCH --output=/scratch/%u/ai4mat/ecad/logs/slurm-%x-%j.out
 
 set -euo pipefail
 

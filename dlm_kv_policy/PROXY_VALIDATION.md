@@ -107,3 +107,62 @@ on the exact value.
 **Confirmation.** Repeat the procedure above on 64 held-out tasks that share
 no task with the original set: same 15 policies, same greedy settings, same
 GPU type. Apply criteria A and B unchanged with the default proxy.
+
+## Registered expanded-space re-check (2026-11-04, before new data)
+
+Michael approved running this re-check and the cost study, with policy-ranking
+Spearman **>= 0.90**. Historical thresholds/results above are unchanged.
+Implementation: `proxy_recheck.py`; config `configs/diffucoder7b_proxy_recheck_96.yaml`.
+
+The exposure audit scanned 3,307 JSON/JSONL artifacts under the ECAD results root
+and found 94 prior task IDs (32 HumanEval, 62 MBPP). It extracts IDs without using
+outcomes. The new manifest `data/code/proxy_recheck_96_seed20261104.jsonl` has 96
+previously unobserved tasks: 48 per dataset, 16 per dataset/prompt-length tertile,
+with round-robin balancing over fixed lexical prompt categories. Seed 20261104.
+The adjacent selection/exposure JSON files record the audit, task IDs, lengths,
+categories, and manifest hash. There are 352 remaining unexposed benchmark IDs
+in this audit. No claim is made about exposure outside the audited artifact root.
+These 96 problems become development/validation data after this experiment.
+
+The 12 policies, frozen in `proxy_recheck.PANEL`, are:
+- refresh_256 and depth_22;
+- each base with split+recent m=32 at r=2 and r=4;
+- depth_22+r4 with m=16 and m=64;
+- depth_22+r8 m=32;
+- depth_22+r4 m=32 with split only;
+- depth_18+r4 and depth_24+r4, m=32, full refresh interval 8.
+All use delay 1, greedy entropy, 256 steps/tokens. Additional controls are native
+dense, dense_repeat, and dense_math. There is no new entropy-trigger or weighted
+ranking mechanism in this panel; they cannot inherit its validation automatically.
+
+All replay and generation run on A100 SXM4 80GB, torch 2.4.1+cu124, with the pinned
+checkpoint. Four task shards share this GPU type. Replay uses the established
+batch-one backend. End-to-end cached generation uses the new batched backend at
+B=1 and is checked token-identical at every step against the reference backend
+on every task/policy. Batched dense B=1 is likewise checked against native dense.
+Pipeline disagreement halts the shard and is a correctness failure, not evidence
+about the proxy. r=1 wrappers must match both base policies in replay. Dense
+repeat and replay/end-to-end dense trajectories must match exactly.
+
+The proxy, position margin 0.01, and token margin 0.1 remain fixed. Two views must
+pass, with no post-result exclusions:
+1. **Overall (12 policies):** mean replay divergence versus dense-pass -> fail
+   count, Spearman >=0.90. Per-task large-margin changes predict failure among
+   dense-passed problems with AUROC >=0.75.
+2. **Depth family (8 alternatives to depth_22):** mean incremental replay
+   divergence versus depth_22-pass -> fail count, Spearman >=0.90. Incremental
+   per-task large-margin changes versus depth_22 predict regressions on problems
+   depth_22 passes, with AUROC >=0.75. The anchor itself is excluded from ranking.
+
+Undefined ranks (all ties) are INCONCLUSIVE. Task AUROC requires >=10 regression
+policy/problem pairs and both outcome classes, otherwise INCONCLUSIVE. Report the
+number of distinct failed problems too. FAIL in either view blocks replay-only
+search. PASS requires both views to pass; otherwise INCONCLUSIVE. Report 95%
+percentile intervals using 2,000 problem-cluster bootstrap resamples, seed 20261104;
+point thresholds above are the gates. Undefined bootstrap replicates are excluded
+with counts reported, not replaced by zeros. Report gains separately from losses.
+Base tests are primary; full/plus tests are secondary. Dense-math pass/fail flips
+supply a numerical-noise reference, not an exemption from a failed gate.
+
+No evolutionary run is authorized by the study launcher. A failed/inconclusive
+proxy is reported before any new proxy or rule is proposed.
