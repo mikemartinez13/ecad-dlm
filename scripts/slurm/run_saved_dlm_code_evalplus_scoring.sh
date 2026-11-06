@@ -22,8 +22,8 @@ if [[ -f "${REPO_ROOT}/.env" ]]; then
 fi
 
 PYTHON_BIN="$(command -v "${PYTHON_BIN:-python}")" || { echo "Activate the DLM Python environment before submitting." >&2; exit 2; }
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-ARTIFACT_ROOT="$("${PYTHON_BIN}" -c 'from ecad.language_models.experiment_artifact_paths import DEFAULT_ARTIFACT_ROOT; print(DEFAULT_ARTIFACT_ROOT)')"
+export PYTHONPATH="${REPO_ROOT}/ecad-dlm:${REPO_ROOT}:${PYTHONPATH:-}"
+ARTIFACT_ROOT="$("${PYTHON_BIN}" -c 'from language_models.experiment_artifact_paths import DEFAULT_ARTIFACT_ROOT; print(DEFAULT_ARTIFACT_ROOT)')"
 APPTAINER_BIN="${APPTAINER_BIN:-apptainer}"
 USE_SAVED_TASK_OUTPUTS="${USE_SAVED_TASK_OUTPUTS:-0}"
 

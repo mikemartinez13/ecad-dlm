@@ -1,0 +1,70 @@
+# E1 + E3 at DiffuCoder's recommended sampling settings (temperature 0.4).
+# Every variant is dense; only the seed or attention kernel changes. If these
+# change as many tasks as a cache policy does (about 43 of 64), then a cache
+# policy at this temperature is indistinguishable from reseeding.
+#   python -m experiments.output_variance_study --config <this file>
+# The same file drives E4 replay at temperature 0.4:
+#   python -m dlm_kv_policy.forced_trajectory_replay --config <this file> \
+#     --policies full_refresh_every_step,dkv_reference,depth_22,delay_0
+run:
+  name: diffucoder7b_output_variance_sampling_t04_v1
+  resume: true
+
+model:
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.4
+  top_p: 0.95
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+  seed: 0
+
+evaluation:
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ecad/data/code/humaneval_mbpp_64_strict_python_seed0.jsonl
+  max_prompts: 64
+  prompt_batch_size: 1
+  evalplus_image: /scratch/gqs7zr/apptainer/evalplus.sif
+  evalplus_humaneval_path: /scratch/gqs7zr/evalplus_data/HumanEvalPlus.jsonl
+  evalplus_mbpp_path: /scratch/gqs7zr/evalplus_data/MbppPlus.jsonl
+  evalplus_parallel: 8
+  evalplus_apptainer_bin: apptainer
+  evalplus_timeout_seconds: 1800
+
+fixed_policy_evaluation:
+  policies: [dense]
+
+policies:
+  dense:
+    force_dense: true
+
+dkv_policies:
+  # Control: nothing is reused, so any drift is backend rounding only.
+  full_refresh_every_step:
+    cache_reloading_step: 1
+  dkv_reference: {}
+  depth_22:
+    refresh_depth: 22
+  # Known-bad control: newly decoded tokens are reused immediately.
+  delay_0:
+    additional_decoded_forwards: 0
+
+variance_study:
+  reference: dense_seed0
+  variants:
+    # Seed 0 is the seed used by every earlier run; it should reproduce them.
+    - name: dense_seed0
+    - name: dense_seed1000
+      generation: {seed: 1000}
+    - name: dense_seed2000
+      generation: {seed: 2000}
+    - name: dense_seed3000
+      generation: {seed: 3000}
+    - name: dense_seed0_math_attention
+      sdpa_backend: math

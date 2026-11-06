@@ -24,9 +24,10 @@ from transformers import AutoModel, AutoTokenizer, __version__ as transformers_v
 
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-from ecad.language_models.experiment_artifact_paths import DEFAULT_RESULTS_ROOT
+for import_root in (ROOT, ROOT / "ecad-dlm"):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+from language_models.experiment_artifact_paths import DEFAULT_RESULTS_ROOT
 
 OFFICIAL_ROOT = ROOT / "dkv_cache_official"
 OFFICIAL_SOURCE_METADATA = ROOT / "dkv_repro" / "metadata" / "official_source.json"

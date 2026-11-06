@@ -12,7 +12,7 @@ constraint therefore favors changing nothing. Token disagreement overstates
 drift too, because one early flip changes every later token. Re-score a few
 residual-cache schedules with forced-trajectory replay before treating this
 approach as failed. See the
-[KV policy guide](../../dlm_kv_policy/README.md#status-of-results-before-2026-10-30-read-this-first).
+[KV policy guide](../../ecad-dlm/dlm_kv_policy/README.md#status-of-results-before-2026-10-30-read-this-first).
 
 ## Caching implementation
 
@@ -20,17 +20,17 @@ The shared runner adapts ECAD's image-model search to diffusion language models.
 
 | File | Purpose |
 | --- | --- |
-| `ecad/language_models/residual_cache_model_backend.py` | Load the selected model, format prompts, and call its sampler |
-| `ecad/language_models/diffucoder_residual_output_cache.py` | Install attention and MLP output caching in DiffuCoder's Dream decoder |
-| `ecad/language_models/residual_output_cache_runtime.py` | Store and reuse outputs during denoising |
-| `ecad/schedulers/cache_scheduler/dlm_cache_schedule.py` | Define schedules and expand grouped decisions |
-| `ecad/genetic/search_dlm_residual_cache_schedules.py` | Run NSGA-II, evaluate candidates, and save checkpoints |
-| `ecad/language_models/residual_cache_schedule_evaluator.py` | Generate responses and compute search objectives |
+| `ecad-dlm/language_models/residual_cache_model_backend.py` | Load the selected model, format prompts, and call its sampler |
+| `ecad-dlm/language_models/diffucoder_residual_output_cache.py` | Install attention and MLP output caching in DiffuCoder's Dream decoder |
+| `ecad-dlm/language_models/residual_output_cache_runtime.py` | Store and reuse outputs during denoising |
+| `ecad-dlm/language_models/dlm_cache_schedule.py` | Define schedules and expand grouped decisions |
+| `ecad-dlm/evolution/search_dlm_residual_cache_schedules.py` | Run NSGA-II, evaluate candidates, and save checkpoints |
+| `ecad-dlm/language_models/residual_cache_schedule_evaluator.py` | Generate responses and compute search objectives |
 | `scripts/evaluate_saved_dlm_code_generations.py` | Score saved responses through sandboxed EvalPlus |
 
 DiffuCoder uses the checkpoint's native `diffusion_generate` sampler and schedules caching over global denoising steps. LLaDA uses the repository's implementation of its native sampler, with a local-step schedule repeated for each output block. YAML `model.family` selects `diffucoder` or `llada`; schedules from these two domains cannot be exchanged.
 
-Token-level K/V caching is implemented separately in `dlm_kv_policy`. Its [experiment guide](../../dlm_kv_policy/README.md) describes the dKV-Decode adaptation, refresh policies, and KV evolution commands.
+Token-level K/V caching is implemented separately in `dlm_kv_policy`. Its [experiment guide](../../ecad-dlm/dlm_kv_policy/README.md) describes the dKV-Decode adaptation, refresh policies, and KV evolution commands.
 
 ## EvalPlus container and offline data
 
@@ -58,13 +58,13 @@ gzip -d /path/to/MbppPlus.jsonl.gz
 
 Set `evaluation.evalplus_humaneval_path: /path/to/HumanEvalPlus.jsonl` and `evaluation.evalplus_mbpp_path: /path/to/MbppPlus.jsonl` in the YAML. The files are mounted read-only in the container, so offline jobs need no benchmark downloads. Keep the image and data files unchanged for a run. The evaluator records their hashes and checks that baseline and candidate results use matching data. Use regular JSONL files rather than symlinks.
 
-During execution, `ecad/language_models/code_execution.py` starts Apptainer with a clean environment, filesystem and process isolation, no host home or working-directory mounts, disabled networking, and no GPU bindings. It mounts the run's execution directory for writing and the evaluator code and benchmark data read-only. EvalPlus applies per-program time limits; the batch allocation provides the job's CPU, memory, and wall-time limits. If the required isolation options fail, execution stops.
+During execution, `ecad-dlm/language_models/code_execution.py` starts Apptainer with a clean environment, filesystem and process isolation, no host home or working-directory mounts, disabled networking, and no GPU bindings. It mounts the run's execution directory for writing and the evaluator code and benchmark data read-only. EvalPlus applies per-program time limits; the batch allocation provides the job's CPU, memory, and wall-time limits. If the required isolation options fail, execution stops.
 
 ## Task datasets and experiment variants
 
 `scripts/prepare_dlm_code_tasks.py` selects tasks, renders prompts, and writes a reusable task JSONL. Its default output is `data/code/humaneval_mbpp_64_strict_python_seed0.jsonl`, containing 32 HumanEval and 32 MBPP tasks. Relative `--output` paths are accepted. The dataset fixes task selection and prompt formatting; generation length is configured separately in YAML.
 
-`ecad/language_models/code_tasks_and_response_processing.py` reconstructs executable Python from responses. New runs save selected task records as `code_tasks.json`, so later scoring uses the exact tasks from that run. Historical `calibration_manifest.json` files remain readable.
+`ecad-dlm/language_models/code_tasks_and_response_processing.py` reconstructs executable Python from responses. New runs save selected task records as `code_tasks.json`, so later scoring uses the exact tasks from that run. Historical `calibration_manifest.json` files remain readable.
 
 Copy an experiment YAML and update model, task, SIF, and benchmark paths as described in the README. Set `evaluation.baseline_artifact: null` for a fresh baseline. Use an existing baseline path only when deliberately reusing compatible generation results.
 
@@ -90,7 +90,7 @@ sbatch scripts/slurm/run_dlm_ecad.sh \
 
 Omit `--max-generations` to run the configured total. Use `--max-generations 0` to prepare only the baseline and its quality objective. Existing submissions that use environment variables remain supported, but the commands above require none.
 
-The shared default is `/scratch/<username>/ai4mat/ecad/results`, selected from the current username in `ecad/language_models/experiment_artifact_paths.py`. Residual-cache searches use `dlm_ecad/<run.name>/`; KV experiments use `dlm_kv_policy/<run.name>/`. The programs create their result directories automatically. Add `run.output_dir: /path/to/results` to override the search's output parent, or pass `--output-dir /path/to/results`. Keep the same location when resuming and scoring. The single-sample inference program accepts `--output /path/to/sample.json`.
+The shared default is `/scratch/<username>/ai4mat/ecad/results`, selected from the current username in `ecad-dlm/language_models/experiment_artifact_paths.py`. Residual-cache searches use `dlm_ecad/<run.name>/`; KV experiments use `dlm_kv_policy/<run.name>/`. The programs create their result directories automatically. Add `run.output_dir: /path/to/results` to override the search's output parent, or pass `--output-dir /path/to/results`. Keep the same location when resuming and scoring. The single-sample inference program accepts `--output /path/to/sample.json`.
 
 Slurm logs go to `/scratch/<username>/ai4mat/ecad/logs/slurm-<job-name>-<job-id>.out`. Slurm does not create that directory, so create it once with `mkdir -p /scratch/$USER/ai4mat/ecad/logs`. Use `sbatch --output=/path/to/job.log` before the script name to change that path. The batch launchers also create Apptainer cache and temporary directories under the user's scratch area. No repository-local `results` or `scratch` directories or links are needed.
 
@@ -145,5 +145,5 @@ These regression suites run without loading model weights:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
-python -m unittest discover -s dlm_kv_policy/tests -p 'test_*.py'
+python -m unittest discover -s ecad-dlm/tests -p 'test_*.py'
 ```

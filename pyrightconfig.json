@@ -1,5 +1,5 @@
 {
-  "include": ["ecad"],
+  "include": ["ecad", "ecad-dlm"],
   "typeCheckingMode": "standard",
   "reportUnknownVariableType": false,
   "reportUnknownMemberType": false,

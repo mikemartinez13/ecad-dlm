@@ -10,21 +10,22 @@ import sys
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+for import_root in (REPO_ROOT, REPO_ROOT / "ecad-dlm"):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
-from ecad.language_models.code_tasks_and_response_processing import (  # noqa: E402
+from language_models.code_tasks_and_response_processing import (  # noqa: E402
     CODE_POSTPROCESSOR_VERSION,
     load_code_task_dataset,
     make_code_task_output,
 )
-from ecad.language_models.code_execution import (  # noqa: E402
+from language_models.code_execution import (  # noqa: E402
     run_evalplus_apptainer,
 )
-from ecad.language_models.experiment_artifact_paths import (  # noqa: E402
+from language_models.experiment_artifact_paths import (  # noqa: E402
     resolve_experiment_result_path,
 )
-from ecad.language_models.residual_cache_experiment_config import (  # noqa: E402
+from language_models.residual_cache_experiment_config import (  # noqa: E402
     load_dlm_residual_cache_config,
 )
 

@@ -32,8 +32,8 @@ MAX_GENERATIONS="${MAX_GENERATIONS:-}"
 APPTAINER_BIN="${APPTAINER_BIN:-apptainer}"
 EVALPLUS_IMAGE="${APPTAINER_EVALPLUS_IMAGE:-}"
 
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-ARTIFACT_ROOT="$("${PYTHON_BIN}" -c 'from ecad.language_models.experiment_artifact_paths import DEFAULT_ARTIFACT_ROOT; print(DEFAULT_ARTIFACT_ROOT)')"
+export PYTHONPATH="${REPO_ROOT}/ecad-dlm:${REPO_ROOT}:${PYTHONPATH:-}"
+ARTIFACT_ROOT="$("${PYTHON_BIN}" -c 'from language_models.experiment_artifact_paths import DEFAULT_ARTIFACT_ROOT; print(DEFAULT_ARTIFACT_ROOT)')"
 
 # Correctness-aware code runs invoke EvalPlus inside a no-network Apptainer
 # sandbox. Token-only runs do not require it, so module discovery is best-effort
@@ -55,7 +55,7 @@ chmod 700 "${APPTAINER_CACHEDIR}" "${APPTAINER_TMPDIR}"
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-COMMAND=(srun "${PYTHON_BIN}" -u -m ecad.genetic.search_dlm_residual_cache_schedules --config "${CONFIG_PATH}")
+COMMAND=(srun "${PYTHON_BIN}" -u -m evolution.search_dlm_residual_cache_schedules --config "${CONFIG_PATH}")
 COMMAND+=(--apptainer-bin "${APPTAINER_BIN}")
 if [[ -n "${MODEL_PATH}" ]]; then
     COMMAND+=(--model-path "${MODEL_PATH}")

@@ -37,6 +37,8 @@ Set up the environment and install all necessary dependencies. Ensure that you a
 
    Both setups install this repository as an editable package. If you run into issues with imports, run `python -m pip install -e .` from the repository root with the intended environment active.
 
+   Language-model code lives in [`ecad-dlm/`](ecad-dlm/README.md), which is not installed by this step. Run `export PYTHONPATH="$PWD/ecad-dlm:$PWD"` from the repository root before using it.
+
 2. **Configure environment variables**:
 
    Copy the `.env_template` file as follows:
@@ -77,7 +79,7 @@ HumanEval asks a model to complete Python functions from their signatures and do
 
 Most experiments run as Slurm batch jobs. The `.sh` launchers call Python programs that generate responses, score schedules, and run NSGA-II optimization. The shared ECAD runner supports DiffuCoder and LLaDA through YAML `model.family` and keeps one model on the GPU throughout the search. Run the commands below from the repository root with your Python environment active.
 
-This section covers schedules that reuse attention and MLP outputs across denoising steps. The caching code is in `ecad/language_models/diffucoder_residual_output_cache.py` and `residual_output_cache_runtime.py`; schedules are defined in `ecad/schedulers/cache_scheduler/dlm_cache_schedule.py`. The separate [DiffuCoder KV policy guide](dlm_kv_policy/README.md) covers token-level K/V caching and its evolutionary experiments.
+This section covers schedules that reuse attention and MLP outputs across denoising steps. The caching code is in `ecad-dlm/language_models/diffucoder_residual_output_cache.py` and `residual_output_cache_runtime.py`; schedules are defined in `ecad-dlm/language_models/dlm_cache_schedule.py`. The separate [DiffuCoder KV policy guide](ecad-dlm/dlm_kv_policy/README.md) covers token-level K/V caching and its evolutionary experiments.
 
 ### Model and benchmark files
 
@@ -135,7 +137,7 @@ The launchers use the active environment's `python` and the repository where you
 Within a GPU allocation, run one prompt without a caching schedule:
 
 ```bash
-python -m ecad.inference.generate_with_dlm_residual_cache_schedule \
+python -m language_models.generate_with_dlm_residual_cache_schedule \
   --config configs/dlm/my_diffucoder_code_search.yaml \
   --prompt "Write a Python function that adds two integers."
 ```

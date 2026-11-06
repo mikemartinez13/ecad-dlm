@@ -269,7 +269,7 @@ The important outputs are:
 To run only one additional generation, useful for budgeting:
 
 ```bash
-python -m ecad.genetic.search_dlm_residual_cache_schedules \
+python -m evolution.search_dlm_residual_cache_schedules \
   --config /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/configs/dlm/llada8b_residual_cache_text_agreement_search_8prompts_64tokens.yaml \
   --max-generations 1
 ```
@@ -279,7 +279,7 @@ python -m ecad.genetic.search_dlm_residual_cache_schedules \
 Use any evolved candidate directly:
 
 ```bash
-python -m ecad.inference.generate_with_dlm_residual_cache_schedule \
+python -m language_models.generate_with_dlm_residual_cache_schedule \
   --config /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/configs/dlm/llada8b_residual_cache_text_agreement_search_8prompts_64tokens.yaml \
   --schedule /scratch/gqs7zr/ai4mat/ecad/results/dlm_ecad/llada8b_ecad_pilot/generations/gen_000/candidates/cand_000.json \
   --prompt "Explain diffusion language models in plain language." \

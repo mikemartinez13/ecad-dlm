@@ -9,10 +9,11 @@ import sys
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+for import_root in (REPO_ROOT, REPO_ROOT / "ecad-dlm"):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
-from ecad.language_models.code_tasks_and_response_processing import (
+from language_models.code_tasks_and_response_processing import (
     select_evalplus_code_tasks,
     write_code_task_dataset,
 )
