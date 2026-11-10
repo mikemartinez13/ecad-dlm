@@ -81,24 +81,62 @@ class KVPolicyNSGA2SearchConfig:
     population_size: int = 8
     generations: int = 8
     seed: int = 0
-    # "base_regression_rate" (EvalPlus) or "replay_divergence" (forced-trajectory replay).
+    # "base_regression_rate" (EvalPlus), "replay_divergence" (forced-trajectory replay)
+    # or "constrained_batched_time" (evolution/constrained_kv_policy_search.py).
     quality_objective: str = "base_regression_rate"
     delays: list[int] = field(default_factory=lambda: [1, 2])
     refresh_intervals: list[int] = field(default_factory=lambda: [4, 8, 12, 16])
     refresh_depths: list[int] = field(default_factory=lambda: [1, 18, 20, 22, 24])
     terminal_refresh_steps: list[int] = field(default_factory=lambda: [0, 8, 16])
+    # One value each by default, so these genes stay fixed unless a config opens them.
+    masked_windows: list[int] = field(default_factory=lambda: [1])
+    protected_sizes: list[int] = field(default_factory=lambda: [32])
+    protected_rules: list[str] = field(default_factory=lambda: ["split+recent"])
+    prompt_refresh_intervals: list[int] = field(default_factory=lambda: [0])  # 0: with every full refresh
+    local_refresh_radii: list[int] = field(default_factory=lambda: [0])
+    padding_windows: list[int] = field(default_factory=lambda: [0])  # 0: same as the masked window
+    entropy_thresholds: list[float] = field(default_factory=lambda: [0.0])  # 0: off
+    entropy_scopes: list[str] = field(default_factory=lambda: ["local"])
     crossover_probability: float = 0.9
     two_gene_mutation_probability: float = 0.2
+    # constrained_batched_time only (EAR_VALIDITY_STUDY.md for the thresholds).
+    min_ear: float = 0.9870
+    min_tail_ear: float = 0.9758
+    min_answer_coverage: float = 0.99
+    objective_batch_size: int = 8
+    cost_table: str | None = None
+    dense_reference: str | None = None
+    # A finished generation's summary.json: its surviving population starts this run.
+    initial_population: str | None = None
 
-    def validate(self) -> None:
-        choices = (
+    def choices(self) -> tuple[list[Any], ...]:
+        """One list of allowed values per genome field, in field order."""
+
+        return (
             self.delays,
             self.refresh_intervals,
             self.refresh_depths,
             self.terminal_refresh_steps,
+            self.masked_windows,
+            self.protected_sizes,
+            self.protected_rules,
+            self.prompt_refresh_intervals,
+            self.local_refresh_radii,
+            self.padding_windows,
+            self.entropy_thresholds,
+            self.entropy_scopes,
         )
-        if self.quality_objective not in {"base_regression_rate", "replay_divergence"}:
-            raise ValueError("evolution.quality_objective must be base_regression_rate or replay_divergence")
+
+    def validate(self) -> None:
+        choices = self.choices()
+        if self.quality_objective not in {"base_regression_rate", "replay_divergence", "constrained_batched_time"}:
+            raise ValueError(
+                "evolution.quality_objective must be base_regression_rate, replay_divergence or constrained_batched_time"
+            )
+        if self.quality_objective == "constrained_batched_time" and not (self.cost_table and self.dense_reference):
+            raise ValueError("constrained_batched_time needs evolution.cost_table and evolution.dense_reference")
+        if any(padding % window for padding in self.padding_windows for window in self.masked_windows):
+            raise ValueError("every evolution padding window must be a multiple of every masked window")
         if self.population_size < 2 or self.generations < 1:
             raise ValueError("evolution population_size must be >= 2 and generations positive")
         if any(not values for values in choices):

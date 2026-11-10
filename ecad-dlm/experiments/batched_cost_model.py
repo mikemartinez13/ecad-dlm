@@ -202,6 +202,30 @@ def smoke(model,tokenizer,tasks,config,output):
 
 
 
+def predicted_seconds(table, tasks, batch, depth):
+    """Model-compute time of one policy over ``tasks``, in batches of similar prompt length.
+
+    Each task is {"prompt_tokens", "task_id", "rows": per-step {active, full_depth, masked}}.
+    Returns (policy seconds, dense seconds). Like project_records, this excludes
+    request indexing and sampler overhead, which the calibration measured separately.
+    """
+    ordered=sorted(tasks,key=lambda t:(t['prompt_tokens'],t['task_id']))
+    if len(ordered)%batch:raise ValueError('Explicit partial-batch calibration required')
+    policy=dense=0.0
+    for offset in range(0,len(ordered),batch):
+        group=ordered[offset:offset+batch];length=max(t['prompt_tokens']+256 for t in group)
+        bucket=next((n for n in table['lengths'] if n>=length),None)
+        if bucket is None:raise ValueError('Context exceeds calibrated table')
+        for step in range(len(group[0]['rows'])):
+            masked={t['rows'][step]['masked'] for t in group}
+            if len(masked)!=1:raise ValueError('Requests have different commit schedules')
+            m=masked.pop()
+            dense+=predict_step(table,batch,bucket,1,[length]*batch,[length]*batch,m,masked=True)
+            policy+=predict_step(table,batch,bucket,depth,[t['rows'][step]['full_depth'] for t in group],
+                                 [t['rows'][step]['active'] for t in group],m,masked=True)
+    return policy,dense
+
+
 def project_records(table, records, batch):
     """Sum costs of batch maxima; context is conservatively rounded up to a table bucket."""
     from .proxy_recheck import PANEL

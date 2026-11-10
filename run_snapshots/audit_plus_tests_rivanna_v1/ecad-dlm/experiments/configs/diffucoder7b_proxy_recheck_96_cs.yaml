@@ -1,0 +1,66 @@
+run:
+  name: diffucoder_proxy_recheck_20261104_v1
+  resume: true
+model:
+  path: /bigtemp/gqs7zr/cache/huggingface/hub/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.0
+  top_p: 1.0
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+  seed: 0
+evaluation:
+  code_tasks_file: /bigtemp/gqs7zr/ecad-dlm/proxy_recheck_96_seed20261104.jsonl
+  max_prompts: 96
+  prompt_batch_size: 1
+  evalplus_image: /bigtemp/gqs7zr/ecad-dlm/apptainer/evalplus.sif
+  evalplus_humaneval_path: /bigtemp/gqs7zr/ecad-dlm/evalplus_data/evalplus_data/HumanEvalPlus.jsonl
+  evalplus_mbpp_path: /bigtemp/gqs7zr/ecad-dlm/evalplus_data/evalplus_data/MbppPlus.jsonl
+  evalplus_parallel: 8
+  evalplus_apptainer_bin: apptainer
+  evalplus_timeout_seconds: 1800
+fixed_policy_evaluation:
+  policies:
+  - dense
+policies:
+  dense:
+    force_dense: true
+dkv_policies:
+  full_refresh_every_step:
+    cache_reloading_step: 1
+  refresh_2:
+    cache_reloading_step: 2
+  refresh_4:
+    cache_reloading_step: 4
+  dkv_reference: {}
+  refresh_16:
+    cache_reloading_step: 16
+  refresh_32:
+    cache_reloading_step: 32
+  refresh_64:
+    cache_reloading_step: 64
+  refresh_256:
+    cache_reloading_step: 256
+  delay_0:
+    additional_decoded_forwards: 0
+  delay_2:
+    additional_decoded_forwards: 2
+  depth_15:
+    refresh_depth: 15
+  depth_22:
+    refresh_depth: 22
+  refresh_32_depth_22:
+    cache_reloading_step: 32
+    refresh_depth: 22
+  refresh_64_delay_2:
+    cache_reloading_step: 64
+    additional_decoded_forwards: 2
+  delay_0_refresh_32:
+    cache_reloading_step: 32
+    additional_decoded_forwards: 0

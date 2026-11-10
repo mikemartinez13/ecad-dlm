@@ -1,0 +1,56 @@
+# Historical run identifier retained for existing results and checkpoint resume.
+run:
+  name: diffucoder7b_code_kv_nsga2_a40_fast_v2
+  resume: true
+
+model:
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.4
+  top_p: 0.95
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+  seed: 0
+
+evaluation:
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/data/code/humaneval_mbpp_64_strict_python_seed0.jsonl
+  max_prompts: 64
+  prompt_batch_size: 1
+  evalplus_image: /scratch/gqs7zr/apptainer/evalplus.sif
+  evalplus_humaneval_path: /scratch/gqs7zr/evalplus_data/HumanEvalPlus.jsonl
+  evalplus_mbpp_path: /scratch/gqs7zr/evalplus_data/MbppPlus.jsonl
+  evalplus_parallel: 8
+  evalplus_apptainer_bin: apptainer
+  evalplus_timeout_seconds: 1800
+  baseline_warmup_runs: 1
+  timing_repeats: 3
+
+fixed_policy_evaluation:
+  policies: [dense]
+  run_evalplus: true
+
+policies:
+  dense:
+    force_dense: true
+
+# Eight evaluated populations: generation 0 plus seven evolved populations.
+# Each candidate runs all 64 paired EvalPlus Base tasks. During selection, one
+# no-diagnostics candidate pass supplies both its output and wall-time objective;
+# a dense warm-up and one timed dense pass are shared by the entire Slurm job.
+evolution:
+  population_size: 8
+  generations: 8
+  seed: 0
+  delays: [1, 2]
+  refresh_intervals: [4, 8, 12, 16]
+  refresh_depths: [1, 18, 20, 22, 24]
+  terminal_refresh_steps: [0, 8, 16]
+  crossover_probability: 0.9
+  two_gene_mutation_probability: 0.2

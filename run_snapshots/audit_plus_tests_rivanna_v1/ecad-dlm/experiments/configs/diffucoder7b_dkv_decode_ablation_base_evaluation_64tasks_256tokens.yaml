@@ -1,0 +1,70 @@
+# Historical run identifier retained for existing results and checkpoint resume.
+run:
+  name: diffucoder7b_code_dkv_ablation_full_v1
+  resume: true
+
+model:
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.4
+  top_p: 0.95
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+  seed: 0
+
+evaluation:
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ai4mat/ecad/data/code/humaneval_mbpp_64_strict_python_seed0.jsonl
+  max_prompts: 64
+  prompt_batch_size: 1
+  evalplus_image: /scratch/gqs7zr/apptainer/evalplus.sif
+  evalplus_humaneval_path: /scratch/gqs7zr/evalplus_data/HumanEvalPlus.jsonl
+  evalplus_mbpp_path: /scratch/gqs7zr/evalplus_data/MbppPlus.jsonl
+  evalplus_parallel: 8
+  evalplus_apptainer_bin: apptainer
+  evalplus_timeout_seconds: 1800
+  baseline_warmup_runs: 1
+  timing_repeats: 3
+
+fixed_policy_evaluation:
+  policies: [dense]
+  run_evalplus: true
+
+dkv_reference:
+  cache_reloading_step: 8
+
+dkv_policies:
+  delay_0:
+    additional_decoded_forwards: 0
+  delay_2:
+    additional_decoded_forwards: 2
+  refresh_4:
+    cache_reloading_step: 4
+  refresh_16:
+    cache_reloading_step: 16
+  refresh_16_terminal_16:
+    cache_reloading_step: 16
+    terminal_full_refresh_steps: 16
+  refresh_16_depth_22:
+    cache_reloading_step: 16
+    refresh_depth: 22
+  depth_15:
+    refresh_depth: 15
+  depth_22:
+    refresh_depth: 22
+  local_4:
+    local_refresh_radius: 4
+  prompt_4:
+    prompt_refresh_interval: 4
+  terminal_16:
+    terminal_full_refresh_steps: 16
+
+policies:
+  dense:
+    force_dense: true

@@ -72,6 +72,8 @@ NEAR_TIE_MARGIN = 0.1
 # Dense confidence margin below which a position flip is a tie-break and does
 # not count. None counts every position flip (the proxy as first registered).
 POSITION_TIE_MARGIN = 0.01
+# Tokens in the Expected Acceptance Rate, as in Helcig, Kurtic and Alistarh (2026).
+EAR_TOP_K = 10
 
 
 from .entropy_confidence import entropy_confidence
@@ -88,6 +90,17 @@ def decoding_distribution(logits: torch.Tensor, temperature: float, top_p: float
     return torch.softmax(logits, dim=-1)
 
 
+def expected_acceptance(dense_log_probs: torch.Tensor, cached_log_probs: torch.Tensor) -> torch.Tensor:
+    """Per-row EAR (their Eq. 3): the sum of min(p, q) over dense's top tokens.
+
+    p and q stay full-vocabulary probabilities at temperature 1, not renormalized
+    over the top tokens, so a row is at most 1 - TV(p, q) plus the excluded tail.
+    """
+
+    values, tokens = dense_log_probs.topk(min(EAR_TOP_K, dense_log_probs.shape[-1]), dim=-1)
+    return torch.minimum(values, cached_log_probs.gather(-1, tokens)).exp().sum(dim=-1)
+
+
 def step_metrics(
     dense_logits: torch.Tensor,
     cached_logits: torch.Tensor,
@@ -98,16 +111,19 @@ def step_metrics(
     temperature: float = 0.0,
     top_p: float = 1.0,
     top_p_logits=None,
+    answer_rows: torch.Tensor | None = None,
 ) -> dict[str, float | bool]:
     """Compare dense and cached logits for one step.
 
     Rows of every tensor are the still-masked positions in sequence order.
     ``committed_rows`` are the rows the dense trajectory unmasks this step.
+    ``answer_rows``, if given, marks the rows inside dense's final answer.
     """
 
     dense_log_probs = F.log_softmax(dense_logits.float(), dim=-1)
     cached_log_probs = F.log_softmax(cached_logits.float(), dim=-1)
     kl_per_row = (dense_log_probs.exp() * (dense_log_probs - cached_log_probs)).sum(dim=-1)
+    ear_per_row = expected_acceptance(dense_log_probs, cached_log_probs)
 
     dense_top2 = dense_log_probs[committed_rows].exp().topk(2, dim=-1).values
     dense_margin = (dense_top2[:, 0] - dense_top2[:, 1]).min()
@@ -131,6 +147,10 @@ def step_metrics(
     cached_decoding = decoding_distribution(cached_logits[committed_rows], temperature, top_p, top_p_logits)
     token_tv = 0.5 * (dense_decoding - cached_decoding).abs().sum(dim=-1).sum().item()
     return {
+        "ear": ear_per_row[committed_rows].tolist(),
+        "ear_masked_answer": (
+            ear_per_row[answer_rows].mean().item() if answer_rows is not None and answer_rows.any() else None
+        ),
         "token_tv": token_tv,
         "kl": kl_per_row[committed_rows].mean().item(),
         "kl_masked_mean": kl_per_row.mean().item(),
@@ -189,11 +209,13 @@ def replay_task(
     generation: Any,
     top_p_logits,
     on_step: Callable[[int, torch.Tensor, DenoisingTokenState], None] | None = None,
+    answer_end: int | None = None,
 ) -> dict[str, Any]:
     """Generate one task densely while scoring every cached policy at every step.
 
     ``on_step(step, x, state)``, if given, runs after every backend's forward
-    and before the dense commit.
+    and before the dense commit. ``answer_end``, if given, is the first generated
+    position after dense's answer, known from an earlier run of the same task.
     """
 
     mask_token_id = int(model.config.mask_token_id)
@@ -245,6 +267,8 @@ def replay_task(
             continue
 
         dense_confidence = entropy_confidence(dense_logits, generation.temperature, generation.top_p, top_p_logits)
+        positions = mask_index[0].nonzero()[:, 0] - prompt.shape[1]
+        answer_rows = None if answer_end is None else positions < answer_end
         for name, result in cached.items():
             confidence = entropy_confidence(result.mask_logits, generation.temperature, generation.top_p, top_p_logits)
             if result.candidates is not None:
@@ -259,11 +283,13 @@ def replay_task(
                 temperature=generation.temperature,
                 top_p=generation.top_p,
                 top_p_logits=top_p_logits,
+                answer_rows=answer_rows,
             )
+            metrics["committed_positions"] = positions[committed_rows].tolist()
             if result.candidates is not None:
                 # Generated positions the dense model committed outside the candidates.
                 outside = committed_rows[~result.candidates[committed_rows]]
-                metrics["outside_positions"] = (mask_index[0].nonzero()[outside, 0] - prompt.shape[1]).tolist()
+                metrics["outside_positions"] = positions[outside].tolist()
             per_policy[name].append({"step": step, **metrics})
 
     generated = x[0, prompt.shape[1] :].tolist()

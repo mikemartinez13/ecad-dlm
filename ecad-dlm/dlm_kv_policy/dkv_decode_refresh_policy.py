@@ -21,6 +21,10 @@ class DKVDecodeRefreshPolicy:
     ``refresh_depth > 1`` enables the depth-boundary ablation: on ordinary
     cached steps, stable decoded rows resume from that cached layer boundary.
     Masks and recently decoded rows still begin at layer one.
+
+    ``prompt_refresh_interval`` gives prompt rows their own schedule, as dLLM-Cache
+    does: with it set, a periodic full refresh skips the prompt unless the step is
+    also a prompt step. Left unset, the prompt refreshes with every full refresh.
     """
 
     name: str = "dkv_decode_reference"
@@ -141,8 +145,11 @@ class DKVDecodeRefreshPolicy:
                     "cached_stable": (int((valid & ~active).sum().item()) if collect_counts else 0),
                 },
             )
+        active = valid
+        if reason == "periodic_full_refresh" and self.prompt_refresh_interval and step % self.prompt_refresh_interval:
+            active = valid & ~states.eq(int(DenoisingTokenCategory.PROMPT))
         return TokenRefreshDecision(
-            active=valid,
+            active=active,
             refresh_depth=torch.ones_like(depths),
-            reasons={reason: (int(valid.sum().item()) if collect_counts else 0)},
+            reasons={reason: (int(active.sum().item()) if collect_counts else 0)},
         )

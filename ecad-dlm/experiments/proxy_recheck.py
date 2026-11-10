@@ -46,9 +46,9 @@ def save(path, data):
     temporary.replace(path)
 
 
-def policies(stop_ids):
+def policies(stop_ids, panel=PANEL):
     result = {}
-    for name, interval, depth, window, m, rule in PANEL:
+    for name, interval, depth, window, m, rule in panel:
         base = DKVDecodeRefreshPolicy(name=name, cache_reloading_step=interval, refresh_depth=depth)
         result[name] = base if window is None else MaskedRowReusePolicy(base,window,m,rule,stop_ids)
     return result

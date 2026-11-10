@@ -1,0 +1,69 @@
+# Constrained search over cache policies: EAR, tail EAR and live answer coverage are
+# bounds, predicted batched time is the one objective. See
+# experiments/EAR_VALIDITY_STUDY.md and evolution/constrained_kv_policy_search.py.
+# Run with experiments/scripts/slurm/submit_constrained_search_rivanna.sh.
+run:
+  name: diffucoder_constrained_kv_search_v1
+  resume: true
+model:
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.0
+  top_p: 1.0
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+  seed: 0
+evaluation:
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ecad/data/code/proxy_recheck_96_seed20261104.jsonl
+  max_prompts: 96
+  prompt_batch_size: 1
+  evalplus_image: /scratch/gqs7zr/apptainer/evalplus.sif
+  evalplus_humaneval_path: /scratch/gqs7zr/evalplus_data/HumanEvalPlus.jsonl
+  evalplus_mbpp_path: /scratch/gqs7zr/evalplus_data/MbppPlus.jsonl
+  evalplus_parallel: 8
+  evalplus_apptainer_bin: apptainer
+  evalplus_timeout_seconds: 1800
+fixed_policy_evaluation:
+  policies:
+  - dense
+policies:
+  dense:
+    force_dense: true
+dkv_policies: {}
+evolution:
+  quality_objective: constrained_batched_time
+  population_size: 16
+  generations: 8
+  seed: 0
+  # Existing genes. Depths are the ones the cost table has block boundaries for.
+  delays: [1, 2]
+  refresh_intervals: [4, 8, 16, 32]
+  refresh_depths: [1, 18, 22, 24]
+  terminal_refresh_steps: [0, 8, 16]
+  # Priority 1: masked reuse.
+  masked_windows: [1, 2, 4, 8]
+  protected_sizes: [32, 48, 64]
+  protected_rules: [split, split+recent]
+  # Priority 2. Interval 0 means with every full refresh; "never" waits for an audit.
+  prompt_refresh_intervals: [0, 8, 32]
+  local_refresh_radii: [0, 2, 4]
+  # Priority 3. 0 means with the masked window; bounded at 32 until audited.
+  padding_windows: [0, 8, 16, 32]
+  # Priority 4. Off, EntropyCache's 1.5, and 0.5, which fires about 6 times per task.
+  entropy_thresholds: [0.0, 1.5, 0.5]
+  entropy_scopes: [local, full]
+  crossover_probability: 0.9
+  two_gene_mutation_probability: 0.2
+  # Thresholds from EAR_VALIDITY_STUDY.md; coverage from the masked-reuse study.
+  min_ear: 0.9870
+  min_tail_ear: 0.9758
+  min_answer_coverage: 0.99
+  objective_batch_size: 8
+  cost_table: /scratch/gqs7zr/ai4mat/ecad/results/dlm_kv_policy/proxy_cost_20261104_v1/cost/table.json
+  dense_reference: /scratch/gqs7zr/ai4mat/ecad/results/dlm_kv_policy/proxy_cost_20261104_v1/proxy

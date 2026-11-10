@@ -7,12 +7,16 @@ loss is chosen by ``evolution.quality_objective``:
   EvalPlus base tests (coarse: one bit per task).
 - ``replay_divergence``: forced-trajectory replay; divergence events per task
   (see forced_trajectory_replay.py). The whole generation shares one dense
-  pass, and no code is executed. Use it only once PROXY_VALIDATION.md passes.
+  pass, and no code is executed. It failed its recheck (EAR_VALIDITY_STUDY.md),
+  so it is kept only to read old runs.
+
+``constrained_kv_policy_search.py`` reuses the genome and selection here with one
+objective, predicted batched time, under Deb's constrained domination.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
 from pathlib import Path
@@ -21,6 +25,7 @@ from typing import Any
 
 from dlm_kv_policy.kv_policy_experiment_config import KVPolicyNSGA2SearchConfig, KVPolicyExperimentConfig
 from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
+from dlm_kv_policy.masked_row_reuse_policy import MaskedRowReusePolicy
 from dlm_kv_policy.code_correctness_and_latency_evaluator import DiffuCoderKVPolicyEvaluator
 from dlm_kv_policy.forced_trajectory_replay import replay_policies, summarize
 
@@ -31,22 +36,72 @@ class KVRefreshPolicyGenome:
     refresh_interval: int
     refresh_depth: int
     terminal_refresh: int
+    masked_window: int = 1
+    protected_size: int = 32
+    protected_rule: str = "split+recent"
+    prompt_refresh_interval: int = 0
+    local_refresh_radius: int = 0
+    padding_window: int = 0
+    entropy_threshold: float = 0.0
+    entropy_scope: str = "local"
 
-    def policy(self) -> DKVDecodeRefreshPolicy:
-        return DKVDecodeRefreshPolicy(
-            name=f"ga_d{self.delay}_r{self.refresh_interval}_l{self.refresh_depth}_t{self.terminal_refresh}",
+    @property
+    def wrapped(self) -> bool:
+        """Whether the policy needs MaskedRowReusePolicy around the base."""
+
+        return self.masked_window > 1 or self.padding_window > 0 or self.entropy_threshold > 0
+
+    @property
+    def name(self) -> str:
+        name = f"ga_d{self.delay}_r{self.refresh_interval}_l{self.refresh_depth}_t{self.terminal_refresh}"
+        if self.prompt_refresh_interval:
+            name += f"_p{self.prompt_refresh_interval}"
+        if self.local_refresh_radius:
+            name += f"_n{self.local_refresh_radius}"
+        if self.masked_window > 1 or self.padding_window:
+            name += f"_w{self.masked_window}_m{self.protected_size}_{self.protected_rule}"
+        if self.padding_window:
+            name += f"_pad{self.padding_window}"
+        if self.entropy_threshold:
+            name += f"_h{self.entropy_threshold:g}{self.entropy_scope}"
+        return name
+
+    def canonical(self) -> "KVRefreshPolicyGenome":
+        """Reset genes that have no effect, so one policy has one genome."""
+
+        values = self.to_dict()
+        if self.masked_window == 1 and not self.padding_window:
+            values["protected_size"], values["protected_rule"] = 32, "split+recent"
+        if not self.entropy_threshold:
+            values["entropy_scope"] = "local"
+        return KVRefreshPolicyGenome(**values)
+
+    def policy(self, stop_ids: set[int] | None = None) -> Any:
+        base = DKVDecodeRefreshPolicy(
+            name=self.name,
             additional_decoded_forwards=self.delay,
             cache_reloading_step=self.refresh_interval,
             refresh_depth=self.refresh_depth,
             terminal_full_refresh_steps=self.terminal_refresh,
+            prompt_refresh_interval=self.prompt_refresh_interval or None,
+            local_refresh_radius=self.local_refresh_radius,
         )
+        if not self.wrapped:
+            return base
+        if stop_ids is None:
+            raise ValueError("Masked reuse and the entropy trigger need the tokenizer's stop ids")
+        policy = MaskedRowReusePolicy(base, self.masked_window, self.protected_size, self.protected_rule, stop_ids,
+                                      self.padding_window, self.entropy_threshold, self.entropy_scope)
+        policy.name = self.name
+        return policy
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "KVRefreshPolicyGenome":
-        return cls(**{name: int(raw[name]) for name in cls.__dataclass_fields__})
+        kinds = {"int": int, "float": float, "str": str}
+        return cls(**{item.name: kinds[item.type](raw.get(item.name, item.default)) for item in fields(cls)})
 
 
 @dataclass(frozen=True)
@@ -60,15 +115,28 @@ class EvaluatedKVPolicy:
     syntax_invalid_count: int | None = None
     output_hash: str = ""
     same_output_as: str | None = None
+    # Constrained search only: its one objective, and the total constraint shortfall.
+    predicted_seconds: float | None = None
+    violation: float = 0.0
+    constraints: dict[str, Any] | None = None
+
+    @property
+    def objectives(self) -> tuple[float, ...]:
+        if self.predicted_seconds is not None:
+            return (self.predicted_seconds,)
+        return (self.quality_loss, self.compute_fraction)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "genome": self.genome.to_dict(),
-            "policy_name": self.genome.policy().name,
+            "policy_name": self.genome.name,
             "objectives": {
                 "quality_loss": self.quality_loss,
                 "compute_fraction": self.compute_fraction,
+                "predicted_seconds": self.predicted_seconds,
             },
+            "violation": self.violation,
+            "constraints": self.constraints,
             "median_generation_wall_time": self.wall_time_seconds,
             "candidate_base_pass_at_1": self.candidate_pass_at_1,
             "syntax_invalid_count": self.syntax_invalid_count,
@@ -88,6 +156,9 @@ class EvaluatedKVPolicy:
             syntax_invalid_count=raw.get("syntax_invalid_count"),
             output_hash=raw.get("output_hash", ""),
             same_output_as=raw.get("same_output_as"),
+            predicted_seconds=objectives.get("predicted_seconds"),
+            violation=float(raw.get("violation", 0.0)),
+            constraints=raw.get("constraints"),
         )
 
 
@@ -99,10 +170,12 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _dominates(left: EvaluatedKVPolicy, right: EvaluatedKVPolicy) -> bool:
-    no_worse = left.quality_loss <= right.quality_loss and left.compute_fraction <= right.compute_fraction
-    return no_worse and (
-        left.quality_loss < right.quality_loss or left.compute_fraction < right.compute_fraction
-    )
+    """Deb's constrained domination: smaller violation first, then Pareto on the objectives."""
+
+    if left.violation != right.violation:
+        return left.violation < right.violation
+    pairs = list(zip(left.objectives, right.objectives))
+    return all(a <= b for a, b in pairs) and any(a < b for a, b in pairs)
 
 
 def non_dominated_fronts(items: list[EvaluatedKVPolicy]) -> list[list[int]]:
@@ -125,7 +198,10 @@ def crowding_distance(items: list[EvaluatedKVPolicy], front: list[int]) -> dict[
     distances = {index: 0.0 for index in front}
     if len(front) <= 2:
         return {index: float("inf") for index in front}
-    for objective in (lambda item: item.quality_loss, lambda item: item.compute_fraction):
+    for position in range(len(items[front[0]].objectives)):
+        def objective(item: EvaluatedKVPolicy) -> float:
+            return item.objectives[position]
+
         ordered = sorted(front, key=lambda index: objective(items[index]))
         distances[ordered[0]] = distances[ordered[-1]] = float("inf")
         low, high = objective(items[ordered[0]]), objective(items[ordered[-1]])
@@ -155,41 +231,46 @@ def environmental_selection(items: list[EvaluatedKVPolicy], size: int) -> list[E
         distances = crowding_distance(items, front)
         ordered = sorted(
             front,
-            key=lambda index: (-distances[index], tuple(items[index].genome.to_dict().values())),
+            key=lambda index: (-distances[index], tuple(map(str, items[index].genome.to_dict().values()))),
         )
         selected.extend(items[index] for index in ordered[: size - len(selected)])
         break
     return selected
 
 
-def _choices(config: KVPolicyNSGA2SearchConfig) -> tuple[list[int], list[int], list[int], list[int]]:
-    return (
-        config.delays,
-        config.refresh_intervals,
-        config.refresh_depths,
-        config.terminal_refresh_steps,
-    )
+# Known controls, which seed every search.
+SEED_GENOMES = (
+    KVRefreshPolicyGenome(1, 8, 1, 0),      # dKV-Decode reference
+    KVRefreshPolicyGenome(1, 16, 1, 0),     # speed-oriented fixed control
+    KVRefreshPolicyGenome(1, 8, 22, 0),     # depth-22 fixed control
+    KVRefreshPolicyGenome(1, 16, 22, 0),    # observed interaction control
+    KVRefreshPolicyGenome(1, 8, 22, 0, 2),  # masked reuse on depth_22, checked end to end
+    KVRefreshPolicyGenome(1, 8, 22, 0, 4),
+    KVRefreshPolicyGenome(1, 8, 22, 0, 8),
+    KVRefreshPolicyGenome(1, 8, 24, 0, 4),
+)
 
 
 def _random_genome(config: KVPolicyNSGA2SearchConfig, rng: random.Random) -> KVRefreshPolicyGenome:
-    return KVRefreshPolicyGenome(*[rng.choice(values) for values in _choices(config)])
+    return KVRefreshPolicyGenome(*[rng.choice(values) for values in config.choices()]).canonical()
 
 
 def initial_population(config: KVPolicyNSGA2SearchConfig) -> list[KVRefreshPolicyGenome]:
-    """Seed known controls, then fill the population with reproducible diversity."""
+    """Seed known controls, or a finished run's survivors, then fill with reproducible diversity."""
 
-    allowed = [set(values) for values in _choices(config)]
-    seeds = [
-        KVRefreshPolicyGenome(1, 8, 1, 0),      # dKV-Decode reference
-        KVRefreshPolicyGenome(1, 16, 1, 0),     # speed-oriented fixed control
-        KVRefreshPolicyGenome(1, 8, 22, 0),     # depth-22 fixed control
-        KVRefreshPolicyGenome(1, 16, 22, 0),    # observed interaction control
-    ]
-    population = [
-        genome
-        for genome in seeds
-        if all(value in choices for value, choices in zip(genome.to_dict().values(), allowed))
-    ]
+    allowed = [set(values) for values in config.choices()]
+
+    def fits(genome: KVRefreshPolicyGenome) -> bool:
+        return all(value in choices for value, choices in zip(genome.to_dict().values(), allowed))
+
+    if config.initial_population:
+        summary = json.loads(Path(config.initial_population).read_text())
+        population = [KVRefreshPolicyGenome.from_dict(raw["genome"]) for raw in summary["population"]]
+        outside = [genome.name for genome in population if not fits(genome)]
+        if outside:
+            raise ValueError(f"Starting genomes outside this config's choices: {outside}")
+    else:
+        population = [genome for genome in SEED_GENOMES if fits(genome)]
     rng = random.Random(config.seed)
     while len(population) < config.population_size:
         candidate = _random_genome(config, rng)
@@ -212,17 +293,18 @@ def _crossover(left: KVRefreshPolicyGenome, right: KVRefreshPolicyGenome, config
         return left
     return KVRefreshPolicyGenome(*[
         rng.choice((first, second)) for first, second in zip(left.to_dict().values(), right.to_dict().values())
-    ])
+    ]).canonical()
 
 
 def _mutate(genome: KVRefreshPolicyGenome, config: KVPolicyNSGA2SearchConfig, rng: random.Random) -> KVRefreshPolicyGenome:
     values = list(genome.to_dict().values())
-    mutable = [index for index, options in enumerate(_choices(config)) if len(set(options)) > 1]
+    choices = config.choices()
+    mutable = [index for index, options in enumerate(choices) if len(set(options)) > 1]
     count = 2 if rng.random() < config.two_gene_mutation_probability else 1
     for index in rng.sample(mutable, min(count, len(mutable))):
-        options = [value for value in _choices(config)[index] if value != values[index]]
+        options = [value for value in choices[index] if value != values[index]]
         values[index] = rng.choice(options)
-    return KVRefreshPolicyGenome(*values)
+    return KVRefreshPolicyGenome(*values).canonical()
 
 
 def offspring_population(
@@ -333,6 +415,8 @@ def run_kv_policy_nsga2_search(
     if generations_this_job < 1:
         raise ValueError("generations_this_job must be positive")
     settings = config.evolution
+    if settings.quality_objective == "constrained_batched_time":
+        raise ValueError("Run constrained_batched_time with evolution/constrained_kv_policy_search.py")
     root = config.run.run_dir / "evolution"
     state_path = root / "state.json"
     signature = _signature(config, evaluator)
@@ -391,7 +475,7 @@ def run_kv_policy_nsga2_search(
             "signature": signature,
             "completed_generations": completed,
             "population": [item.to_dict() for item in population],
-            "seen_genomes": [genome.to_dict() for genome in sorted(seen, key=lambda item: tuple(item.to_dict().values()))],
+            "seen_genomes": [genome.to_dict() for genome in sorted(seen, key=lambda item: item.name)],
         }
         _write_json(state_path, state)
         last_summary = summary

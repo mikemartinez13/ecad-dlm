@@ -1,0 +1,392 @@
+{
+  "seed": 20261107,
+  "set": "audit",
+  "tasks": 96,
+  "manifest_sha256": "56b81c273fe7d6ac2738aa8a0d7d6f59217632c8e28f11e2beec50cd5c68a658",
+  "selected": {
+    "Mbpp/608": {
+      "prompt_tokens": 92,
+      "dataset": "mbpp"
+    },
+    "Mbpp/477": {
+      "prompt_tokens": 96,
+      "dataset": "mbpp"
+    },
+    "Mbpp/67": {
+      "prompt_tokens": 96,
+      "dataset": "mbpp"
+    },
+    "Mbpp/781": {
+      "prompt_tokens": 96,
+      "dataset": "mbpp"
+    },
+    "Mbpp/227": {
+      "prompt_tokens": 97,
+      "dataset": "mbpp"
+    },
+    "Mbpp/600": {
+      "prompt_tokens": 97,
+      "dataset": "mbpp"
+    },
+    "Mbpp/641": {
+      "prompt_tokens": 97,
+      "dataset": "mbpp"
+    },
+    "Mbpp/787": {
+      "prompt_tokens": 97,
+      "dataset": "mbpp"
+    },
+    "Mbpp/800": {
+      "prompt_tokens": 97,
+      "dataset": "mbpp"
+    },
+    "Mbpp/56": {
+      "prompt_tokens": 98,
+      "dataset": "mbpp"
+    },
+    "Mbpp/598": {
+      "prompt_tokens": 98,
+      "dataset": "mbpp"
+    },
+    "Mbpp/604": {
+      "prompt_tokens": 98,
+      "dataset": "mbpp"
+    },
+    "Mbpp/79": {
+      "prompt_tokens": 98,
+      "dataset": "mbpp"
+    },
+    "Mbpp/17": {
+      "prompt_tokens": 99,
+      "dataset": "mbpp"
+    },
+    "Mbpp/566": {
+      "prompt_tokens": 99,
+      "dataset": "mbpp"
+    },
+    "Mbpp/235": {
+      "prompt_tokens": 100,
+      "dataset": "mbpp"
+    },
+    "Mbpp/252": {
+      "prompt_tokens": 100,
+      "dataset": "mbpp"
+    },
+    "Mbpp/451": {
+      "prompt_tokens": 100,
+      "dataset": "mbpp"
+    },
+    "Mbpp/748": {
+      "prompt_tokens": 100,
+      "dataset": "mbpp"
+    },
+    "Mbpp/397": {
+      "prompt_tokens": 101,
+      "dataset": "mbpp"
+    },
+    "Mbpp/58": {
+      "prompt_tokens": 101,
+      "dataset": "mbpp"
+    },
+    "Mbpp/565": {
+      "prompt_tokens": 102,
+      "dataset": "mbpp"
+    },
+    "Mbpp/599": {
+      "prompt_tokens": 102,
+      "dataset": "mbpp"
+    },
+    "Mbpp/11": {
+      "prompt_tokens": 103,
+      "dataset": "mbpp"
+    },
+    "Mbpp/118": {
+      "prompt_tokens": 103,
+      "dataset": "mbpp"
+    },
+    "Mbpp/592": {
+      "prompt_tokens": 103,
+      "dataset": "mbpp"
+    },
+    "Mbpp/72": {
+      "prompt_tokens": 103,
+      "dataset": "mbpp"
+    },
+    "Mbpp/19": {
+      "prompt_tokens": 104,
+      "dataset": "mbpp"
+    },
+    "Mbpp/422": {
+      "prompt_tokens": 104,
+      "dataset": "mbpp"
+    },
+    "Mbpp/793": {
+      "prompt_tokens": 104,
+      "dataset": "mbpp"
+    },
+    "Mbpp/759": {
+      "prompt_tokens": 105,
+      "dataset": "mbpp"
+    },
+    "Mbpp/432": {
+      "prompt_tokens": 106,
+      "dataset": "mbpp"
+    },
+    "Mbpp/588": {
+      "prompt_tokens": 106,
+      "dataset": "mbpp"
+    },
+    "Mbpp/581": {
+      "prompt_tokens": 107,
+      "dataset": "mbpp"
+    },
+    "Mbpp/69": {
+      "prompt_tokens": 107,
+      "dataset": "mbpp"
+    },
+    "Mbpp/576": {
+      "prompt_tokens": 108,
+      "dataset": "mbpp"
+    },
+    "Mbpp/606": {
+      "prompt_tokens": 108,
+      "dataset": "mbpp"
+    },
+    "Mbpp/61": {
+      "prompt_tokens": 108,
+      "dataset": "mbpp"
+    },
+    "Mbpp/65": {
+      "prompt_tokens": 108,
+      "dataset": "mbpp"
+    },
+    "Mbpp/788": {
+      "prompt_tokens": 109,
+      "dataset": "mbpp"
+    },
+    "Mbpp/172": {
+      "prompt_tokens": 110,
+      "dataset": "mbpp"
+    },
+    "Mbpp/439": {
+      "prompt_tokens": 110,
+      "dataset": "mbpp"
+    },
+    "Mbpp/755": {
+      "prompt_tokens": 110,
+      "dataset": "mbpp"
+    },
+    "Mbpp/556": {
+      "prompt_tokens": 111,
+      "dataset": "mbpp"
+    },
+    "Mbpp/589": {
+      "prompt_tokens": 111,
+      "dataset": "mbpp"
+    },
+    "Mbpp/421": {
+      "prompt_tokens": 112,
+      "dataset": "mbpp"
+    },
+    "Mbpp/554": {
+      "prompt_tokens": 112,
+      "dataset": "mbpp"
+    },
+    "Mbpp/751": {
+      "prompt_tokens": 113,
+      "dataset": "mbpp"
+    },
+    "Mbpp/784": {
+      "prompt_tokens": 113,
+      "dataset": "mbpp"
+    },
+    "Mbpp/459": {
+      "prompt_tokens": 114,
+      "dataset": "mbpp"
+    },
+    "Mbpp/222": {
+      "prompt_tokens": 115,
+      "dataset": "mbpp"
+    },
+    "Mbpp/777": {
+      "prompt_tokens": 115,
+      "dataset": "mbpp"
+    },
+    "Mbpp/415": {
+      "prompt_tokens": 116,
+      "dataset": "mbpp"
+    },
+    "Mbpp/567": {
+      "prompt_tokens": 118,
+      "dataset": "mbpp"
+    },
+    "Mbpp/632": {
+      "prompt_tokens": 118,
+      "dataset": "mbpp"
+    },
+    "Mbpp/742": {
+      "prompt_tokens": 118,
+      "dataset": "mbpp"
+    },
+    "Mbpp/791": {
+      "prompt_tokens": 119,
+      "dataset": "mbpp"
+    },
+    "Mbpp/270": {
+      "prompt_tokens": 121,
+      "dataset": "mbpp"
+    },
+    "Mbpp/446": {
+      "prompt_tokens": 121,
+      "dataset": "mbpp"
+    },
+    "Mbpp/390": {
+      "prompt_tokens": 123,
+      "dataset": "mbpp"
+    },
+    "Mbpp/470": {
+      "prompt_tokens": 125,
+      "dataset": "mbpp"
+    },
+    "HumanEval/24": {
+      "prompt_tokens": 127,
+      "dataset": "humaneval"
+    },
+    "Mbpp/141": {
+      "prompt_tokens": 127,
+      "dataset": "mbpp"
+    },
+    "HumanEval/55": {
+      "prompt_tokens": 129,
+      "dataset": "humaneval"
+    },
+    "Mbpp/619": {
+      "prompt_tokens": 129,
+      "dataset": "mbpp"
+    },
+    "Mbpp/644": {
+      "prompt_tokens": 130,
+      "dataset": "mbpp"
+    },
+    "Mbpp/94": {
+      "prompt_tokens": 130,
+      "dataset": "mbpp"
+    },
+    "Mbpp/140": {
+      "prompt_tokens": 136,
+      "dataset": "mbpp"
+    },
+    "HumanEval/15": {
+      "prompt_tokens": 142,
+      "dataset": "humaneval"
+    },
+    "HumanEval/138": {
+      "prompt_tokens": 152,
+      "dataset": "humaneval"
+    },
+    "HumanEval/75": {
+      "prompt_tokens": 157,
+      "dataset": "humaneval"
+    },
+    "HumanEval/36": {
+      "prompt_tokens": 158,
+      "dataset": "humaneval"
+    },
+    "HumanEval/18": {
+      "prompt_tokens": 162,
+      "dataset": "humaneval"
+    },
+    "Mbpp/473": {
+      "prompt_tokens": 165,
+      "dataset": "mbpp"
+    },
+    "HumanEval/60": {
+      "prompt_tokens": 178,
+      "dataset": "humaneval"
+    },
+    "HumanEval/31": {
+      "prompt_tokens": 180,
+      "dataset": "humaneval"
+    },
+    "HumanEval/8": {
+      "prompt_tokens": 185,
+      "dataset": "humaneval"
+    },
+    "Mbpp/754": {
+      "prompt_tokens": 190,
+      "dataset": "mbpp"
+    },
+    "HumanEval/101": {
+      "prompt_tokens": 191,
+      "dataset": "humaneval"
+    },
+    "HumanEval/145": {
+      "prompt_tokens": 196,
+      "dataset": "humaneval"
+    },
+    "HumanEval/64": {
+      "prompt_tokens": 200,
+      "dataset": "humaneval"
+    },
+    "HumanEval/106": {
+      "prompt_tokens": 201,
+      "dataset": "humaneval"
+    },
+    "HumanEval/86": {
+      "prompt_tokens": 204,
+      "dataset": "humaneval"
+    },
+    "HumanEval/100": {
+      "prompt_tokens": 207,
+      "dataset": "humaneval"
+    },
+    "HumanEval/125": {
+      "prompt_tokens": 216,
+      "dataset": "humaneval"
+    },
+    "HumanEval/118": {
+      "prompt_tokens": 224,
+      "dataset": "humaneval"
+    },
+    "HumanEval/41": {
+      "prompt_tokens": 225,
+      "dataset": "humaneval"
+    },
+    "HumanEval/43": {
+      "prompt_tokens": 231,
+      "dataset": "humaneval"
+    },
+    "HumanEval/38": {
+      "prompt_tokens": 232,
+      "dataset": "humaneval"
+    },
+    "HumanEval/20": {
+      "prompt_tokens": 240,
+      "dataset": "humaneval"
+    },
+    "HumanEval/17": {
+      "prompt_tokens": 246,
+      "dataset": "humaneval"
+    },
+    "HumanEval/117": {
+      "prompt_tokens": 256,
+      "dataset": "humaneval"
+    },
+    "HumanEval/113": {
+      "prompt_tokens": 257,
+      "dataset": "humaneval"
+    },
+    "HumanEval/130": {
+      "prompt_tokens": 310,
+      "dataset": "humaneval"
+    },
+    "HumanEval/126": {
+      "prompt_tokens": 324,
+      "dataset": "humaneval"
+    },
+    "HumanEval/81": {
+      "prompt_tokens": 344,
+      "dataset": "humaneval"
+    }
+  }
+}

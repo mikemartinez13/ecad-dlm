@@ -1,0 +1,14 @@
+{
+  "delay": 1,
+  "refresh_interval": 8,
+  "refresh_depth": 22,
+  "terminal_refresh": 0,
+  "masked_window": 8,
+  "protected_size": 32,
+  "protected_rule": "split+recent",
+  "prompt_refresh_interval": 0,
+  "local_refresh_radius": 0,
+  "padding_window": 0,
+  "entropy_threshold": 0.0,
+  "entropy_scope": "local"
+}

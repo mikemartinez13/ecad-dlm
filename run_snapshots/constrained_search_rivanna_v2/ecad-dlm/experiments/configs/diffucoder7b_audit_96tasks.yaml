@@ -1,0 +1,35 @@
+# The audit set; see experiments/CONSTRAINED_SEARCH.md.
+run:
+  name: diffucoder_audit_v1
+  resume: true
+model:
+  path: /scratch/gqs7zr/model_checkpoints/models--apple--DiffuCoder-7B-cpGRPO/snapshots/98bc42bfd871eeec92fd0a8439ab34f75b405204
+  device: cuda
+  dtype: bfloat16
+  local_files_only: true
+generation:
+  steps: 256
+  gen_length: 256
+  temperature: 0.0
+  top_p: 1.0
+  top_k: null
+  algorithm: entropy
+  algorithm_temperature: 0.0
+  seed: 0
+evaluation:
+  code_tasks_file: /sfs/gpfs/tardis/home/gqs7zr/ecad/ecad-dlm/experiments/task_sets/audit_96_seed20261107.jsonl
+  max_prompts: 96
+  prompt_batch_size: 1
+  evalplus_image: /scratch/gqs7zr/apptainer/evalplus.sif
+  evalplus_humaneval_path: /scratch/gqs7zr/evalplus_data/HumanEvalPlus.jsonl
+  evalplus_mbpp_path: /scratch/gqs7zr/evalplus_data/MbppPlus.jsonl
+  evalplus_parallel: 8
+  evalplus_apptainer_bin: apptainer
+  evalplus_timeout_seconds: 1800
+fixed_policy_evaluation:
+  policies:
+  - dense
+policies:
+  dense:
+    force_dense: true
+dkv_policies: {}

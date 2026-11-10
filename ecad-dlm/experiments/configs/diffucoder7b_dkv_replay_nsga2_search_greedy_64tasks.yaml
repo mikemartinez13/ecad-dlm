@@ -1,3 +1,4 @@
+# Superseded: replay_divergence failed its recheck. Use diffucoder7b_constrained_kv_search_96tasks.yaml.
 # NSGA-II over dKV policies, scored by forced-trajectory replay.
 # The proxy passed validation on 2026-10-31. Quality ignores position flips
 # where dense was tied (see PROXY_VALIDATION.md).
