@@ -52,7 +52,7 @@ Each policy has 12 genes. Most come from a published caching method, and the sea
 | --- | --- | --- | --- |
 | `delay` | 1, 2 | Wait this many steps after a token is decoded before caching it, since its features are still settling. | dKV-Cache [1] |
 | `refresh_interval` | 4, 8, 16, 32 | Recompute every position from scratch every N steps. | dKV-Cache [1] |
-| `refresh_depth` | 1, 18, 22, 24 | Between full refreshes, decoded tokens recompute only the layers from this depth up; shallow layers change little. 1 means all layers. | Elastic-Cache [2] |
+| `refresh_depth` | 1, 18, 22, 24 | Between full refreshes, decoded tokens also recompute the layers from this depth up every step. 1 means they are not recomputed, which is the cheapest. | Elastic-Cache [2] |
 | `terminal_refresh` | 0, 8, 16 | Recompute everything for the last N steps. | Ours |
 | `masked_window` (r) | 1, 2, 4, 8 | Still-masked positions reuse their features for r steps instead of being recomputed every step. | Fast-dLLM DualCache [3], d²Cache [4] |
 | `protected_size` (m) | 32, 48, 64 | The m masked positions most likely to be decoded next are always kept fresh. | d²Cache [4] |
@@ -63,11 +63,11 @@ Each policy has 12 genes. Most come from a published caching method, and the sea
 | `entropy_threshold` | 0, 1.5, 0.5 | If a newly decoded token is uncertain (entropy above this, in nats), refresh on the next step. 0 is off. | EntropyCache [9] |
 | `entropy_scope` | local, full | That refresh covers either the decoded tokens near the uncertain one, or the whole sequence as in the paper. | EntropyCache [9] |
 
-These are the ranges of the first search, about 500,000 policies. The second search widens the genes the first one pushed against; see `diffucoder7b_constrained_kv_search_v2_96tasks.yaml`.
+These are the ranges of the first search, about 500,000 policies. Later searches widen the genes the previous one pushed against: run 2 (about 3.5 million policies, also run 3's ranges) and run 4 (about 22.7 million); see `ecad-dlm/experiments/CONSTRAINED_SEARCH.md`.
 
 ### Scoring quality: EAR
 
-Quality is measured by **forced-trajectory replay** (`dlm_kv_policy/forced_trajectory_replay.py`). Dense decodes each task as usual, and every candidate policy is shown the exact same sequence at each step while keeping its own, possibly stale, cache. Comparing the two at the position dense commits gives a clean per-step measure, without one early mistake cascading into a different answer.
+Quality is measured by **teacher forcing** (`dlm_kv_policy/teacher_forcing.py`). Dense decodes each task as usual, and every candidate policy is shown the exact same sequence at each step while keeping its own, possibly stale, cache. Comparing the two at the position dense commits gives a clean per-step measure, without one early mistake cascading into a different answer.
 
 The comparison is the **Expected Acceptance Rate** (EAR) from Helcig, Kurtić and Alistarh [10]:
 
@@ -83,27 +83,29 @@ Feasible policies count as equally faithful and compete only on speed. Infeasibl
 
 ### Scoring cost
 
-Cost is the predicted wall time of batched decoding at batch size 8 (`experiments/batched_cost_model.py`). We time the model's layer blocks once on an A100 80GB for many combinations of sequence length and recomputed rows. Replay records how many rows each policy recomputes, and at what depth, at every step, and the table turns those counts into seconds. Predicted speedups rank real batched speedups well (Spearman 0.98 over 21 policies), but they overestimate them, because they leave out indexing and sampler overhead. Only the ranking is relied on.
+Cost is the policy's FLOPs divided by dense FLOPs, as ECAD counts TMACs. Teacher forcing records how many rows each forward computes, at which layers, and `ecad-dlm/utils/compute_cost.py` turns those counts into FLOPs, so the cost needs no timing and is the same on every GPU. On the batched backend it ranks the measured batch-8 speedups of 21 policies at Spearman 0.995, as well as the timed cost table did (0.992), but its speedups read about 16% high, because every request in a batch pays for the batch's largest row count and each layer has a fixed launch cost (`experiments/cost_model_panel.py`). Only the ranking is relied on. Runs 1 and 2 used the timed table (`evolution.cost_objective: predicted_seconds`); their configs keep it.
+
+Run 3's audit showed that plain FLOPs misrank the policies it found: they save rows at different steps in different tasks, and a padded batch pays for its busiest request at every step (Spearman 0.52 with measured batch-8 speed). Run 4 therefore uses **padded FLOPs** (`cost_objective: padded_flops`): tasks are grouped in eights by prompt length and each request is charged its group's largest row count per layer, which ranks the same policies at 0.83. See `ecad-dlm/experiments/CONSTRAINED_SEARCH.md`.
 
 ### Why EAR is a decent measure, but not a perfect one
 
-EAR is cheap: one replay pass, no program execution. It is continuous, and it reliably separates broken policies from good ones: every policy with a net loss of 12 or more tasks was rejected on two separate task sets. But:
+EAR is cheap: one teacher-forced pass, no program execution. It is continuous, and it reliably separates broken policies from good ones: every policy with a net loss of 12 or more tasks was rejected on two separate task sets. But:
 
 - **It is blind to masked reuse.** The positions that get decoded are the protected ones, which are always fresh, so EAR barely moves as `masked_window` and `protected_size` change. Answer coverage is the guard there.
 - **It does not rank near-dense policies.** Among policies within a few tasks of dense, EAR's order barely tracks their pass rates.
-- **It measures one step at a time.** Replay removes compounding errors by design, but free-running generation does compound.
-- **Its thresholds did not confirm.** On 96 new tasks, the thresholds rejected several good policies, and the 2-task margin turned out to be within noise: swapping only the attention kernel moves dense by 3 tasks.
+- **It measures one step at a time.** Teacher forcing removes compounding errors by design, but free-running generation does compound.
+- **On new tasks, its thresholds rejected good policies.** On 96 new tasks, the thresholds rejected several policies within 2 tasks of dense, and the 2-task margin is within noise: swapping only the attention kernel moves dense by 3 tasks.
 
 EAR comes from LLM quantization, where it measures how closely a compressed model matches the original. Whether it also predicts test results for caching had to be checked here, and it only partly does. It works as a filter that keeps the search away from clearly lossy policies, and every result is confirmed by running the tests.
 
 ## Running the Evolution
 
-Each search runs on three disjoint sets of 96 tasks (28 HumanEval, 68 MBPP) in `ecad-dlm/experiments/task_sets/`. The **search** set scores candidates, the **audit** set is touched once at the end, and the **tau confirmation** set checked the thresholds. They were built by `experiments/task_sets.py`.
+Each search runs on three disjoint sets of 96 tasks (28 HumanEval, 68 MBPP) in `ecad-dlm/experiments/task_sets/`. The **search** set scores candidates, the **audit** set is touched once at the end, and the **tau confirmation** set measured the thresholds again on unseen tasks. They were built by `experiments/task_sets.py`.
 
 Start from a supplied config and edit its paths:
 
 ```bash
-cp ecad-dlm/experiments/configs/diffucoder7b_constrained_kv_search_v2_96tasks.yaml \
+cp ecad-dlm/experiments/configs/diffucoder7b_constrained_kv_search_v3_96tasks.yaml \
     ecad-dlm/experiments/configs/my_search.yaml
 ```
 
@@ -112,27 +114,17 @@ cp ecad-dlm/experiments/configs/diffucoder7b_constrained_kv_search_v2_96tasks.ya
 | `model.path` | `/path/to/DiffuCoder-7B-cpGRPO` |
 | `evaluation.code_tasks_file` | `/path/to/ecad/ecad-dlm/experiments/task_sets/search_96_seed20261107.jsonl` |
 | `evaluation.evalplus_image` | `/path/to/evalplus.sif` |
-| `evolution.cost_table` | `/path/to/cost/table.json` |
+| `evolution.cost_objective` | `flops` (no cost table needed) |
 | `evolution.dense_reference` | `/path/to/results/my_search/dense` |
 | `evolution.initial_population` | a previous run's `generation_XXX/summary.json`, or remove it to start fresh |
 | `evolution.generations` | `24` |
 
-The cost table is built once, on an A100 80GB; this also runs a calibration check and takes a few hours:
+On a Slurm cluster, the launcher submits the whole chain: dense reference, then for each generation a CPU `advance` step and 16 GPU teacher forcing shards, then the audit and the EvalPlus extra tests. The scripts hold Rivanna paths; edit `ARTIFACTS` in the launcher and `PYTHON_BIN` in `run_proxy_cost_prerequisites_rivanna.sh` for your cluster.
 
 ```bash
-python -m experiments.batched_cost_model \
-    --config ecad-dlm/experiments/configs/my_search.yaml \
-    --output /path/to/cost
-```
-
-On a Slurm cluster, the launcher submits the whole chain: dense reference, then for each generation a CPU `advance` step and 16 GPU replay shards, then the audit and the EvalPlus extra tests. The scripts hold Rivanna paths; edit `ARTIFACTS` in the launcher and `PYTHON_BIN` in `run_proxy_cost_prerequisites_rivanna.sh` for your cluster.
-
-```bash
-RUN=my_search CONFIG=my_search.yaml ACCOUNT=my_account AUDIT_TOP=8 OVERRIDE_TAU_GATE=1 \
+RUN=my_search CONFIG=my_search.yaml ACCOUNT=my_account AUDIT_TOP=8 \
     bash ecad-dlm/experiments/scripts/slurm/submit_constrained_search_rivanna.sh
 ```
-
-**Note**: the launcher refuses to start unless the τ confirmation passed. It did not (see `ecad-dlm/experiments/CONSTRAINED_SEARCH.md`), so `OVERRIDE_TAU_GATE=1` is required.
 
 To run on a single GPU instead, step through the generations by hand:
 
@@ -159,7 +151,7 @@ python -m evolution.constrained_kv_policy_search plus \
     --config ecad-dlm/experiments/configs/diffucoder7b_audit_96tasks.yaml --output $OUT
 ```
 
-The search, replay and audit check that they are on an A100 80GB, since the thresholds and cost table were measured there.
+The search, teacher forcing and audit check that they are on an A100 80GB, since the thresholds were measured there.
 
 ## Testing a Policy
 
@@ -183,7 +175,7 @@ python -m experiments.evaluate_policies \
     --output /path/to/results/my_policies
 ```
 
-Results go to `/path/to/results/my_policies/policies.json`: pass@1 on base and extra tests, tasks lost and gained against dense, and measured speedup. Add `--tasks 4` for a quick check, or `--no-timing` to skip timing. Decoding is greedy, so pass@1 is simply the fraction of tasks whose one program passes.
+Results go to `/path/to/results/my_policies/policies.json`: pass@1 on base and extra tests, tasks lost and gained against dense, and measured speedup. Add `--tasks 4` for a quick check, or `--no-timing` to skip timing. Add `--compile` to time decoding with `torch.compile`'d layers: about 15% faster on an A100, but it changes some output tokens, so it is off by default. Decoding is greedy, so pass@1 is simply the fraction of tasks whose one program passes.
 
 ## Results So Far
 
@@ -202,10 +194,11 @@ The best searched policy is 15% faster than the best hand-chosen one, at a diffe
 
 | Folder | Contents |
 | --- | --- |
-| `ecad-dlm/dlm_kv_policy/` | Caching policies, the batch-one and batched backends, the sampler, and forced-trajectory replay |
+| `ecad-dlm/dlm_kv_policy/` | Caching policies, the batch-one and batched backends, the sampler, and teacher forcing |
 | `ecad-dlm/evolution/` | The constrained NSGA-II search (`constrained_kv_policy_search.py`) and the genome (`nsga2_kv_policy_search.py`) |
 | `ecad-dlm/experiments/` | The cost model, the EAR study, policy testing, configs, task sets, Slurm scripts and study write-ups |
 | `ecad-dlm/language_models/` | Model loading, code tasks and EvalPlus execution |
+| `ecad-dlm/utils/` | Helpers outside the caching method: FLOP counting, row packing, result files and rank statistics |
 | `ecad-dlm/policies/` | Example policies |
 | `ecad-dlm/tests/` | CPU tests |
 

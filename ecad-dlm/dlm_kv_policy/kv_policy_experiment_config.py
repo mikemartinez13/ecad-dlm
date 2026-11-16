@@ -81,7 +81,7 @@ class KVPolicyNSGA2SearchConfig:
     population_size: int = 8
     generations: int = 8
     seed: int = 0
-    # "base_regression_rate" (EvalPlus), "replay_divergence" (forced-trajectory replay)
+    # "base_regression_rate" (EvalPlus), "teacher_forcing_divergence" (teacher forcing)
     # or "constrained_batched_time" (evolution/constrained_kv_policy_search.py).
     quality_objective: str = "base_regression_rate"
     delays: list[int] = field(default_factory=lambda: [1, 2])
@@ -103,9 +103,20 @@ class KVPolicyNSGA2SearchConfig:
     min_ear: float = 0.9870
     min_tail_ear: float = 0.9758
     min_answer_coverage: float = 0.99
-    objective_batch_size: int = 8
-    cost_table: str | None = None
+    # The one objective under the constraints: "flops" (policy FLOPs / dense FLOPs, from
+    # teacher forcing's own row counts; ranks measured batch-8 speed at Spearman 0.995 over the
+    # 21-policy panel; run v3), "padded_flops" (the same, with every request charged its
+    # padded batch's largest row count; run v4) or "predicted_seconds" (the timed cost table;
+    # runs v1 and v2).
+    cost_objective: str = "flops"
+    objective_batch_size: int = 8  # padded_flops and predicted_seconds
+    cost_table: str | None = None  # predicted_seconds only
     dense_reference: str | None = None
+    # Tasks teacher-forced per forward. Above 1, evaluate uses batched teacher forcing
+    # with vectorized scoring (BATCHED_TEACHER_FORCING_CHECK.md), along dense trajectories
+    # recorded at batch one in dense_trajectories; the dense stage records missing ones.
+    teacher_forcing_batch_size: int = 1
+    dense_trajectories: str | None = None
     # A finished generation's summary.json: its surviving population starts this run.
     initial_population: str | None = None
 
@@ -129,14 +140,25 @@ class KVPolicyNSGA2SearchConfig:
 
     def validate(self) -> None:
         choices = self.choices()
-        if self.quality_objective not in {"base_regression_rate", "replay_divergence", "constrained_batched_time"}:
+        if self.quality_objective not in {"base_regression_rate", "teacher_forcing_divergence", "constrained_batched_time"}:
             raise ValueError(
-                "evolution.quality_objective must be base_regression_rate, replay_divergence or constrained_batched_time"
+                "evolution.quality_objective must be base_regression_rate, teacher_forcing_divergence or constrained_batched_time"
             )
-        if self.quality_objective == "constrained_batched_time" and not (self.cost_table and self.dense_reference):
-            raise ValueError("constrained_batched_time needs evolution.cost_table and evolution.dense_reference")
+        if self.cost_objective not in {"flops", "padded_flops", "predicted_seconds"}:
+            raise ValueError("evolution.cost_objective must be flops, padded_flops or predicted_seconds")
+        if self.objective_batch_size < 1:
+            raise ValueError("evolution.objective_batch_size must be positive")
+        if self.quality_objective == "constrained_batched_time":
+            if not self.dense_reference:
+                raise ValueError("constrained_batched_time needs evolution.dense_reference")
+            if self.cost_objective == "predicted_seconds" and not self.cost_table:
+                raise ValueError("cost_objective predicted_seconds needs evolution.cost_table")
         if any(padding % window for padding in self.padding_windows for window in self.masked_windows):
             raise ValueError("every evolution padding window must be a multiple of every masked window")
+        if self.teacher_forcing_batch_size < 1:
+            raise ValueError("evolution.teacher_forcing_batch_size must be positive")
+        if self.teacher_forcing_batch_size > 1 and not self.dense_trajectories:
+            raise ValueError("batched teacher forcing needs evolution.dense_trajectories")
         if self.population_size < 2 or self.generations < 1:
             raise ValueError("evolution population_size must be >= 2 and generations positive")
         if any(not values for values in choices):

@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from dlm_kv_policy import validate_proxy
+from dlm_kv_policy.teacher_forcing import SAVED_FOLDER
 from dlm_kv_policy.validate_proxy import auroc, average_ranks, spearman
 
 CONFIG = """
@@ -32,7 +33,7 @@ def variant(statuses: dict[str, str], tokens: list[list[int]]) -> dict:
     }
 
 
-def replay_rows(changes: int) -> list[dict]:
+def teacher_forcing_rows(changes: int) -> list[dict]:
     row = {"token_tv": 1.0, "kl": 0.1, "kl_masked_mean": 0.1, "top1_flip": True, "position_flip": False,
            "dense_margin": 0.5, "dense_position_margin": 0.0}
     quiet = {**row, "token_tv": 0.0, "kl": 0.0, "top1_flip": False}
@@ -51,14 +52,14 @@ class StatisticsTests(unittest.TestCase):
 
 
 class ValidateProxyEndToEndTests(unittest.TestCase):
-    def test_a_proxy_that_tracks_failures_passes_criterion_a(self) -> None:
+    def test_a_proxy_that_tracks_failures_ranks_and_separates_them(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             config_path = root / "config.yaml"
             config_path.write_text(CONFIG.format(output_dir=root))
             folder = root / "study" / "GPU"
             (folder / "variants").mkdir(parents=True)
-            (folder / "forced_trajectory_replay" / "tasks").mkdir(parents=True)
+            (folder / SAVED_FOLDER / "tasks").mkdir(parents=True)
             tokens = [[1], [2]]
             all_pass = {"t0": "pass", "t1": "pass"}
             for name, record in {
@@ -74,21 +75,20 @@ class ValidateProxyEndToEndTests(unittest.TestCase):
                     "dense_token_ids": tokens[index],
                     "dense_flops": 10,
                     "flops": {"good": 8, "bad": 5},
-                    "policies": {"good": replay_rows(0), "bad": replay_rows(2 if task == "t0" else 0)},
+                    "policies": {"good": teacher_forcing_rows(0), "bad": teacher_forcing_rows(2 if task == "t0" else 0)},
                 }
-                (folder / "forced_trajectory_replay" / "tasks" / f"task_{index:03d}.json").write_text(json.dumps(payload))
+                (folder / SAVED_FOLDER / "tasks" / f"task_{index:03d}.json").write_text(json.dumps(payload))
 
             argv = ["validate_proxy", "--config", str(config_path), "--gpu-folder", "GPU"]
             with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
                 validate_proxy.main()
             report = json.loads((folder / "proxy_validation_report.json").read_text())
 
-        self.assertTrue(all(report["preconditions"].values()))
-        self.assertEqual(report["criterion_a"]["result"], "pass")
-        self.assertEqual(report["criterion_b"]["auroc"], 1.0)
-        # One failure is too few for criterion B, so the verdict cannot be PASS.
-        self.assertEqual(report["criterion_b"]["result"], "inconclusive")
-        self.assertEqual(report["verdict"], "INCONCLUSIVE")
+        self.assertTrue(all(report["consistency"].values()))
+        self.assertEqual(report["policy_ranking"]["spearman"], 1.0)
+        self.assertEqual(report["task_auroc"]["auroc"], 1.0)
+        self.assertEqual(report["task_auroc"]["failures"], 1)
+        self.assertNotIn("verdict", report)
 
 
 if __name__ == "__main__":

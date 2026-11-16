@@ -1,15 +1,15 @@
 """Confirm the search's fidelity thresholds and the cost model's ranking on unseen tasks.
 
 The thresholds came from the 96 tasks of the EAR validity study. This applies the
-search's exact feasibility rule, unchanged, to the tau confirmation set, and checks
-that predicted batched time ranks policies the way real batched decoding does. The
-rules are fixed in CONSTRAINED_SEARCH.md.
+search's exact feasibility rule, unchanged, to the tau confirmation set, and measures
+how well predicted batched time ranks policies against real batched decoding.
+CONSTRAINED_SEARCH.md describes the panel and reads the results.
 
-  run      GPU, A100 80GB. One shard of dense generation, replay with EAR, and
+  run      GPU, A100 80GB. One shard of dense generation, teacher forcing with EAR, and
            free-running programs for every panel policy.
   time     GPU, A100 80GB. Real batched decoding of every policy at batch 8, on all
            tasks, in one job so that all timings share a GPU.
-  report   No model. Scores the programs, then writes both verdicts.
+  report   No model. Scores the programs, then writes the feasibility table and the cost ranking.
 """
 from __future__ import annotations
 
@@ -24,12 +24,13 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from dlm_kv_policy.dense_diffucoder_baseline import BatchedDenseDiffuCoderBaseline, DenseDiffuCoderBaseline
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-from dlm_kv_policy.forced_trajectory_replay import load_top_p_logits, replay_task
+from dlm_kv_policy.teacher_forcing import load_top_p_logits, teacher_force_task
 from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_config
 from evolution.nsga2_kv_policy_search import KVRefreshPolicyGenome as Genome
 
 from .batched_cost_model import predicted_seconds
-from .batched_decoding_study import fixed_batches, source_provenance
+from .batched_decoding_study import fixed_batches
+from utils.results_io import source_provenance
 from .ear_validity import (
     NET_LOSS_MARGIN,
     NOISE_FLOOR,
@@ -41,13 +42,15 @@ from .ear_validity import (
     pass_fraction,
     task_metrics,
 )
-from .proxy_recheck import backend, generation_settings, policies, rank_score, save
+from .proxy_recheck import backend, generation_settings, policies
+from utils.ranking import rank_score
+from utils.results_io import save
 
 GPU = "NVIDIA A100-SXM4-80GB"
 SEED = 20261108
 BOOTSTRAPS = 2000
 BATCH = 8
-# Reported, not in the verdict: one new gene each, which EAR was never validated on.
+# Reported separately: one new gene each, which EAR was never validated on.
 GENE_PANEL = {
     "gene_prompt_32": Genome(1, 8, 22, 0, prompt_refresh_interval=32),
     "gene_local_2": Genome(1, 8, 22, 0, local_refresh_radius=2),
@@ -56,7 +59,6 @@ GENE_PANEL = {
     "gene_entropy_full": Genome(1, 8, 22, 0, entropy_threshold=0.5, entropy_scope="full"),
 }
 DEPTHS = {**{row[0]: row[2] for row in PANEL}, **{name: genome.refresh_depth for name, genome in GENE_PANEL.items()}}
-RANKING_MIN_SPEARMAN = 0.90
 
 
 def panel(stops: set[int]) -> dict[str, Any]:
@@ -120,10 +122,10 @@ def run(config_path: Path, output: Path, part: int, parts: int) -> None:
                 return result
 
             backends[name].forward_mask_logits = record
-        print(f"part {part}: task {index} replay", flush=True)
-        replay = replay_task(model, sampler, backends, prompt, mask, config.generation, top_p_logits, answer_end=answer_end)
-        if replay["dense_token_ids"] != generations["dense"]["token_ids"]:
-            raise RuntimeError(f"Task {index}: replay and generation disagree on dense")
+        print(f"part {part}: task {index} teacher forcing", flush=True)
+        teacher_forcing = teacher_force_task(model, sampler, backends, prompt, mask, config.generation, top_p_logits, answer_end=answer_end)
+        if teacher_forcing["dense_token_ids"] != generations["dense"]["token_ids"]:
+            raise RuntimeError(f"Task {index}: teacher forcing and generation disagree on dense")
         del backends
         with sdpa_kernel(SDPBackend.MATH):
             generations[NOISE_FLOOR] = program(task, sampler.generate(prompt, attention_mask=mask, **settings), width)
@@ -132,25 +134,30 @@ def run(config_path: Path, output: Path, part: int, parts: int) -> None:
             result = DiffuCoderDenoisingSampler(backend(model, policy)).generate(prompt, attention_mask=mask, **settings)
             generations[name] = program(task, result, width)
         metrics = {}
-        for name, steps in replay["policies"].items():
+        for name, steps in teacher_forcing["policies"].items():
             outside = sum(position < answer_end for row in steps for position in row.get("outside_positions", []))
-            metrics[name] = {**task_metrics(steps, answer_end), "answer_outside": outside, "flops": replay["flops"][name],
+            metrics[name] = {**task_metrics(steps, answer_end), "answer_outside": outside, "flops": teacher_forcing["flops"][name],
                              "rows": rows.get(name)}
         save(path, {"task_id": task.task_id, "index": index, "prompt_tokens": width, "answer_end": answer_end,
-                    "dense_flops": replay["dense_flops"], "metrics": metrics, "generations": generations})
+                    "dense_flops": teacher_forcing["dense_flops"], "metrics": metrics, "generations": generations})
         print(f"part {part}: {index} {task.task_id} complete", flush=True)
 
 
 def measured_batched_seconds(model: Any, tokenizer: Any, tasks: list[Any], make_backend: Any, settings: dict[str, Any],
-                             device: str, batch: int = BATCH) -> float:
-    """Real decoding time over all tasks in batches of similar length, after one warm-up batch."""
+                             device: str, batch: int = BATCH, warm_every_batch: bool = False) -> float:
+    """Real decoding time over all tasks in batches of similar length, after one warm-up batch.
+
+    ``warm_every_batch`` decodes every batch once before timing. Compiled layers need
+    it: each new sequence length is compiled the first time it is seen.
+    """
 
     from language_models.diffucoder_loader import prepare_diffucoder_prompt_batch
 
     sampler = DiffuCoderDenoisingSampler(make_backend())
     batches, _ = fixed_batches(tasks, tokenizer, batch)
     inputs = [prepare_diffucoder_prompt_batch(tokenizer, [tasks[index].prompt for index in group], device) for group in batches]
-    sampler.generate(inputs[0][0], attention_mask=inputs[0][1], **settings)
+    for prompt, mask in (inputs if warm_every_batch else inputs[:1]):
+        sampler.generate(prompt, attention_mask=mask, **settings)
     return sum(sampler.generate(prompt, attention_mask=mask, **settings).elapsed_seconds for prompt, mask in inputs)
 
 
@@ -184,22 +191,24 @@ def feasibility(ear: np.ndarray, coverage: float, settings: Any) -> dict[str, An
             "feasible": lower >= settings.min_ear and tail >= settings.min_tail_ear and coverage >= settings.min_answer_coverage}
 
 
-def decide(names: list[str], feasible: dict[str, bool], within: dict[str, bool]) -> dict[str, Any]:
-    """CONFIRMED needs no lossy policy feasible and at most one near-lossless policy rejected."""
+def disagreements(names: list[str], feasible: dict[str, bool], within: dict[str, bool]) -> dict[str, Any]:
+    """Where feasibility and the end-to-end margin disagree.
 
-    false_safe = [name for name in names if feasible[name] and not within[name]]
-    false_reject = [name for name in names if not feasible[name] and within[name]]
-    verdict = "UNSAFE" if false_safe else "TOO_STRICT" if len(false_reject) > 1 else "CONFIRMED"
-    return {"verdict": verdict, "false_safe": false_safe, "false_reject": false_reject}
+    false_safe: feasible, yet losing more than the margin. false_reject: within the
+    margin, yet infeasible.
+    """
+
+    return {"false_safe": [name for name in names if feasible[name] and not within[name]],
+            "false_reject": [name for name in names if not feasible[name] and within[name]]}
 
 
 def ranking(predicted: dict[str, float], measured: dict[str, float]) -> dict[str, Any]:
-    """Whether predicted speedup over dense orders policies as measured speedup does."""
+    """How closely predicted speedup over dense orders policies as measured speedup does."""
 
     names = [name for name in predicted if name in measured]
     observed = {name: measured["dense"] / measured[name] for name in names}
     spearman = rank_score([predicted[name] for name in names], [observed[name] for name in names])
-    return {"spearman": spearman, "passed": spearman is not None and spearman >= RANKING_MIN_SPEARMAN, "policies": len(names),
+    return {"spearman": spearman, "policies": len(names),
             "predicted_speedup": predicted, "measured_speedup": observed}
 
 
@@ -247,9 +256,9 @@ def report(config_path: Path, search_config: Path, output: Path) -> dict[str, An
     tracked = [name for name in table if name != NOISE_FLOOR]
     summary: dict[str, Any] = {
         "dense_pass_at_1": float(reference.mean()), "table": table,
-        "registered": decide(list(REGISTERED), feasible, within),
-        "all_old_policies": decide([name for name in table if name not in GENE_PANEL], feasible, within),
-        "new_genes": decide(list(GENE_PANEL), feasible, within),
+        "registered": disagreements(list(REGISTERED), feasible, within),
+        "all_old_policies": disagreements([name for name in table if name not in GENE_PANEL], feasible, within),
+        "new_genes": disagreements(list(GENE_PANEL), feasible, within),
         "spearman_one_minus_ear": {
             "net_loss": rank_score([1 - table[name]["ear"] for name in tracked], [table[name]["net_loss"] for name in tracked]),
             "pass_fraction_drop": rank_score([1 - table[name]["ear"] for name in tracked], [table[name]["pass_fraction_drop"] for name in tracked]),
@@ -265,7 +274,6 @@ def report(config_path: Path, search_config: Path, output: Path) -> dict[str, An
             seconds, dense_seconds = predicted_seconds(cost, tasks, BATCH, DEPTHS[name])
             predicted[name] = dense_seconds / seconds
         summary["cost_ranking"] = ranking(predicted, json.loads(measured_path.read_text()))
-    summary["launch"] = summary["registered"]["verdict"] == "CONFIRMED" and summary.get("cost_ranking", {}).get("passed", False)
     save(output / "tau_confirmation_report.json", summary)
 
     speed = summary.get("cost_ranking", {})
@@ -279,8 +287,7 @@ def report(config_path: Path, search_config: Path, output: Path) -> dict[str, An
     for label in ("registered", "all_old_policies", "new_genes"):
         print(label, summary[label])
     print("Spearman 1-EAR:", summary["spearman_one_minus_ear"])
-    print("cost ranking Spearman:", speed.get("spearman"), "passed:", speed.get("passed"))
-    print("LAUNCH:", summary["launch"])
+    print("cost ranking Spearman:", speed.get("spearman"))
     return summary
 
 

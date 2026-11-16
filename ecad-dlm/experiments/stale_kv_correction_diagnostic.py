@@ -1,8 +1,8 @@
 """Diagnostic: why the fitted correction did not reduce divergence events.
 
 The correction pilot added the M4-predicted stale error to stale K/V rows and
-divergence did not fall. Three explanations are told apart here (criteria in
-STALE_KV_ERROR_STUDY.md):
+divergence did not fall. The measurements here tell three explanations apart
+(STALE_KV_ERROR_STUDY.md):
 
   compounding        the corrected K/V are not closer to dense, because
                      corrections in earlier layers and steps change what the
@@ -13,7 +13,7 @@ STALE_KV_ERROR_STUDY.md):
   residual           both are closer, but decisions still turn on the error
                      that cannot be predicted.
 
-Every task is replayed with each policy at strength 0 (the uncorrected run,
+Every task is teacher-forced with each policy at strength 0 (the uncorrected run,
 which the pilot showed is exactly the plain policy), 0.5 and 1.0. Per run and
 layer, summed over steps:
 
@@ -22,7 +22,7 @@ layer, summed over steps:
   - the attention output (o_proj input) of the rows computed that step,
     against dense.
 
-  run --fold K --part P   GPU. Replays half of fold K's tasks.
+  run --fold K --part P   GPU. Teacher-forces half of fold K's tasks.
   report                  Ratios to the uncorrected run, with intervals. No model.
 
 The layer-4 test adds --skip-layers 4 to both. The corrections then leave
@@ -52,7 +52,7 @@ from dlm_kv_policy.code_correctness_and_latency_evaluator import gpu_folder_name
 from dlm_kv_policy.dense_diffucoder_baseline import DenseDiffuCoderBaseline
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-from dlm_kv_policy.forced_trajectory_replay import load_top_p_logits, replay_task
+from dlm_kv_policy.teacher_forcing import load_top_p_logits, teacher_force_task
 from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_config
 from .stale_kv_correction_pilot import (
     INTERVAL,
@@ -204,8 +204,8 @@ class AttentionProbe:
             self.sums[key][layer] += value
 
 
-class DiagnosedReplay:
-    """Forced-trajectory replay of every policy at each strength, summing errors against dense."""
+class DiagnosedTeacherForcing:
+    """Teacher forcing of every policy at each strength, summing errors against dense."""
 
     def __init__(
         self, model: Any, dense_backend: Any, policies: dict[str, Any], fits: dict[str, dict[str, torch.Tensor]],
@@ -264,7 +264,7 @@ class DiagnosedReplay:
                 tensor.zero_()
         for correction in self.corrections:
             correction.start(prompt.shape[1], prompt.shape[1] + self.generation.gen_length)
-        return replay_task(
+        return teacher_force_task(
             self.model, self.sampler, self.backends, prompt, attention_mask, self.generation, self.top_p_logits,
             on_step=self.on_step,
         )
@@ -280,21 +280,21 @@ def run(config: Any, fold: int, part: int, skipped_layers: tuple[int, ...] = ())
     for name in POLICIES:
         with np.load(study.output_dir / "fit" / name / f"fold{fold}.npz") as saved:
             fits[name] = {key: torch.from_numpy(saved[key]).to(device) for key in ("m4_matrix", "m4_intercept")}
-    replay = DiagnosedReplay(
+    teacher_forcing = DiagnosedTeacherForcing(
         study.model, DenseDiffuCoderBaseline(study.model), {name: config.dkv_policies[name] for name in POLICIES},
         fits, study.stop_ids, config.generation, load_top_p_logits(study.model),
         diagnosed_runs(list(POLICIES), skipped_layers),
     )
     # Runs that correct every layer, or nothing, are the pilot's runs under another label.
     pilot_labels = {
-        label: f"{name}@{strength}" for label, name, strength, skipped, _ in replay.runs if not skipped or strength == 0
+        label: f"{name}@{strength}" for label, name, strength, skipped, _ in teacher_forcing.runs if not skipped or strength == 0
     }
 
     indices = study.part_tasks(fold, part)
     for count, index in enumerate(indices):
         prompt, attention_mask, _, saved = study.task_inputs(index)
         pilot = json.loads((pilot_dir(config, STUDY_GPU) / "tasks" / f"task_{index:03d}.json").read_text())
-        result = replay.run(prompt, attention_mask)
+        result = teacher_forcing.run(prompt, attention_mask)
         # The recorders only read, so on the pilot task's GPU type those runs must equal the pilot's.
         matches_pilot = None
         if gpu == pilot["gpu"]:
@@ -309,9 +309,9 @@ def run(config: Any, fold: int, part: int, skipped_layers: tuple[int, ...] = ())
             "matches_pilot": matches_pilot,
             "skipped_layers": list(skipped_layers),
             "metrics": {label: task_metrics(rows) for label, rows in result["policies"].items()},
-            "sums": {label: {key: tensor.cpu().tolist() for key, tensor in sums.items()} for label, sums in replay.sums.items()},
+            "sums": {label: {key: tensor.cpu().tolist() for key, tensor in sums.items()} for label, sums in teacher_forcing.sums.items()},
             "probe": {
-                label: {key: tensor.cpu().tolist() for key, tensor in probe.sums.items()} for label, probe in replay.probes.items()
+                label: {key: tensor.cpu().tolist() for key, tensor in probe.sums.items()} for label, probe in teacher_forcing.probes.items()
             },
         }
         path = output_dir / "tasks" / f"task_{index:03d}.json"
@@ -319,7 +319,7 @@ def run(config: Any, fold: int, part: int, skipped_layers: tuple[int, ...] = ())
         path.write_text(json.dumps(record), encoding="utf-8")
 
         def scored(label: str, key: str) -> float:
-            return float(replay.sums[label][key][SCORED_FIRST_LAYER:].sum())
+            return float(teacher_forcing.sums[label][key][SCORED_FIRST_LAYER:].sum())
 
         base = f"{PRIMARY_POLICY}@0.0"
         events = record["metrics"]
@@ -381,11 +381,6 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
                 low, high = ratio_interval(numerator, denominator, rng)
                 entry[quantity] = {"ratio": float(numerator.sum() / denominator.sum()), "interval_low": low, "interval_high": high}
                 rows.append({"policy": name, "strength": strength, "quantity": quantity, **entry[quantity]})
-            kv_closer = entry["kv"]["interval_high"] < 1
-            attention_closer = entry["attention"]["interval_high"] < 1
-            entry["explanation"] = (
-                "compounding" if not kv_closer else "not_decision_relevant" if not attention_closer else "residual"
-            )
             comparisons[label] = entry
 
     layer_rows = []
@@ -445,14 +440,14 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
         "primary_policy": PRIMARY_POLICY,
         "interval": INTERVAL,
         "skipped_layers": records[0].get("skipped_layers", []),
-        "explanation": {strength: comparisons[f"{PRIMARY_POLICY}@{strength}"]["explanation"] for strength in STRENGTHS},
-        "pipeline_passed": bool(checked) and all(checked),
+        # The two ratios the explanations turn on, at the primary policy (below 1: closer to dense).
+        "primary_ratios": {strength: {quantity: comparisons[f"{PRIMARY_POLICY}@{strength}"][quantity]
+                                      for quantity in ("kv", "attention")} for strength in STRENGTHS},
+        "matches_pilot": bool(checked) and all(checked),
         "tasks_checked_against_pilot": len(checked),
         "comparisons": comparisons,
         "divergence_events": divergence,
     }
-    if divergence:
-        summary["success"] = any(entry["interval_high"] < 0 for entry in comparisons_primary)
     if probe_rows:
         path = output_dir / "attention_probe_by_layer.csv"
         with path.open("w", encoding="utf-8") as handle:
@@ -482,10 +477,12 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
                 f"change {row['change']:.3f} ({row['change_at_top_fraction']:.0%} at top row), key part {row['key_part_fraction']:.0%}, "
                 f"output change {row['relative_output_change']:.3f}"
             )
-    print(f"Runs match the pilot exactly on {len(checked)} tasks run on the pilot's GPU type: {summary['pipeline_passed']}")
-    print(f"Explanation at {PRIMARY_POLICY}: {summary['explanation']}")
-    if divergence:
-        print(f"Success ({PRIMARY_POLICY} divergence events fall at some strength): {summary['success']}")
+    print(f"Runs match the pilot exactly on {len(checked)} tasks run on the pilot's GPU type: {summary['matches_pilot']}")
+    for strength, ratios in summary["primary_ratios"].items():
+        print(f"{PRIMARY_POLICY} at {strength}: " + "; ".join(
+            f"{quantity} {row['ratio']:.3f} [{row['interval_low']:.3f}, {row['interval_high']:.3f}]" for quantity, row in ratios.items()))
+    for entry in comparisons_primary if divergence else []:
+        print(f"{PRIMARY_POLICY} divergence events: {entry}")
     return summary
 
 

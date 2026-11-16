@@ -24,7 +24,7 @@ from language_models.diffucoder_loader import (
     prepare_diffucoder_prompt_batch,
 )
 
-from .compute_cost import ModelShape, dense_forward_flops
+from utils.compute_cost import ModelShape, dense_forward_flops
 from .diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from .kv_policy_experiment_config import KVPolicyExperimentConfig
 from .dense_diffucoder_baseline import DenseDiffuCoderBaseline
@@ -185,7 +185,7 @@ class DiffuCoderKVPolicyEvaluator:
         """Generate one task set with either stock dense or active-row execution."""
 
         tasks = self.tasks if tasks is None else tasks
-        # A policy that needs its own backend (masked_row_reuse_replay.py) makes it.
+        # A policy that needs its own backend (masked_row_reuse_teacher_forcing.py) makes it.
         backend = (
             policy.make_backend(self.model)
             if hasattr(policy, "make_backend")

@@ -274,7 +274,7 @@ python -m evolution.search_dlm_residual_cache_schedules \
   --max-generations 1
 ```
 
-## Replaying a schedule
+## Teacher forcing a schedule
 
 Use any evolved candidate directly:
 

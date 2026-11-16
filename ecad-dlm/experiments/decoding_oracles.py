@@ -63,7 +63,7 @@ from dlm_kv_policy.denoising_token_state import DenoisingTokenCategory, Denoisin
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend, _apply_rope, _repeat_kv
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
 from dlm_kv_policy.fixed_token_refresh_policy import TokenRefreshDecision
-from dlm_kv_policy.forced_trajectory_replay import entropy_confidence
+from dlm_kv_policy.teacher_forcing import entropy_confidence
 from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_config
 
 

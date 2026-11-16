@@ -1,11 +1,11 @@
 """Is the Expected Acceptance Rate a fair fidelity constraint for DiffuCoder caches?
 
-Replays the 96 tasks of proxy_recheck.py with EAR logged, adds free-running
+Teacher-forces the 96 tasks of proxy_recheck.py with EAR logged, adds free-running
 programs for the policies that run did not cover, and tests whether EAR separates
 policies inside and outside the outcome margin. The design, the margin and the
 validity rule are in EAR_VALIDITY_STUDY.md.
 
-  run      GPU, A100 80GB. One shard of forced-trajectory replay and generation.
+  run      GPU, A100 80GB. One shard of teacher forcing and generation.
            The dense output and every policy already in the proxy recheck must
            reproduce that run exactly.
   report   No model. Scores the new programs, then writes the policy table,
@@ -26,11 +26,13 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from dlm_kv_policy.dense_diffucoder_baseline import DenseDiffuCoderBaseline
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-from dlm_kv_policy.forced_trajectory_replay import counts_as_position_change, load_top_p_logits, replay_task
+from dlm_kv_policy.teacher_forcing import SAVED_KEY, counts_as_position_change, load_top_p_logits, teacher_force_task
 
-from .batched_decoding_study import source_provenance
+from utils.results_io import source_provenance
 from .proxy_recheck import PANEL as RECHECK_PANEL
-from .proxy_recheck import auc_score, backend, generation_settings, policies, rank_score, save
+from .proxy_recheck import backend, generation_settings, policies
+from utils.ranking import auc_score, rank_score
+from utils.results_io import save
 
 SEED = 20261106
 GPU = "NVIDIA A100-SXM4-80GB"
@@ -42,7 +44,7 @@ NEW_PANEL = [
 ]
 PANEL = [*RECHECK_PANEL, *NEW_PANEL]
 ALL_POLICIES = (NOISE_FLOOR, *(row[0] for row in PANEL))
-# The panel the verdict is registered on; ALL_POLICIES is the sensitivity check.
+# The main panel, chosen before results; ALL_POLICIES adds the rest.
 REGISTERED = (NOISE_FLOOR, "depth_22", "depth_22_r2", "depth_22_r4", "depth_22_r8", "depth_24_r4", "refresh_256",
               "refresh_256_r2", "refresh_256_r4", "refresh_32", "refresh_32_depth_22")
 # Near-lossless: a net loss of at most this many of the 96 tasks against dense.
@@ -52,7 +54,7 @@ BOOTSTRAPS = 2000
 
 
 class MathKernelDense(DenseDiffuCoderBaseline):
-    """Dense with PyTorch's math attention kernel: the E3 noise floor, as a replay policy."""
+    """Dense with PyTorch's math attention kernel: the E3 noise floor, as a teacher-forced policy."""
 
     def forward_mask_logits(self, **inputs: Any):
         with sdpa_kernel(SDPBackend.MATH):
@@ -102,18 +104,18 @@ def run(config_path: Path, proxy_output: Path, output: Path, part: int, parts: i
         saved = json.loads((proxy_output / "tasks" / f"task_{index:03d}.json").read_text())
         if saved["task_id"] != task.task_id:
             raise RuntimeError(f"Task {index} is not the proxy recheck's task")
-        answer_end = answer_length(saved["replay"]["dense_token_ids"], stop_ids)
+        answer_end = answer_length(saved[SAVED_KEY]["dense_token_ids"], stop_ids)
         seed_everything(config.generation.seed + index)
         prompt, mask = prepare_diffucoder_prompt_batch(tokenizer, [task.prompt], config.model.device)
         backends = {name: backend(model, policy) for name, policy in policies(stop_ids, PANEL).items()}
         backends[NOISE_FLOOR] = MathKernelDense(model)
-        print(f"part {part}: task {index} replay", flush=True)
-        replay = replay_task(model, sampler, backends, prompt, mask, config.generation, top_p_logits,
+        print(f"part {part}: task {index} teacher forcing", flush=True)
+        teacher_forcing = teacher_force_task(model, sampler, backends, prompt, mask, config.generation, top_p_logits,
                              answer_end=answer_end)
-        if replay["dense_token_ids"] != saved["replay"]["dense_token_ids"]:
+        if teacher_forcing["dense_token_ids"] != saved[SAVED_KEY]["dense_token_ids"]:
             raise RuntimeError(f"Task {index}: dense differs from the proxy recheck")
         for name, *_ in RECHECK_PANEL:
-            if not same_steps(replay["policies"][name], saved["replay"]["policies"][name]):
+            if not same_steps(teacher_forcing["policies"][name], saved[SAVED_KEY]["policies"][name]):
                 raise RuntimeError(f"Task {index}: {name} differs from the proxy recheck")
         del backends
         generations = {}
@@ -123,7 +125,7 @@ def run(config_path: Path, proxy_output: Path, output: Path, part: int, parts: i
             ids = result.sequences[0, prompt.shape[1]:].cpu().tolist()
             generations[name] = {"token_ids": ids, "output": make_code_task_output(task, tokenizer.decode(ids, skip_special_tokens=True))}
         save(path, {"signature": signature, "task_id": task.task_id, "index": index, "gpu": GPU,
-                    "stop_ids": sorted(stop_ids), "answer_end": answer_end, "replay": replay, "generations": generations})
+                    "stop_ids": sorted(stop_ids), "answer_end": answer_end, SAVED_KEY: teacher_forcing, "generations": generations})
         print(f"part {part}: {index} {task.task_id} complete", flush=True)
 
 
@@ -171,15 +173,15 @@ def leave_one_out(names: list[str], ear: dict[str, float], within: dict[str, boo
         calls[held] = {"threshold": threshold, "safe": bool(safe), "within_margin": within[held]}
     false_safe = [name for name, call in calls.items() if call["safe"] and not call["within_margin"]]
     false_reject = [name for name, call in calls.items() if not call["safe"] and call["within_margin"]]
-    return {"calls": calls, "false_safe": false_safe, "false_reject": false_reject,
-            "passed": not false_safe and len(false_reject) <= 1}
+    return {"calls": calls, "false_safe": false_safe, "false_reject": false_reject}
 
 
-def verdict(names: list[str], ear: dict[str, float], within: dict[str, bool], flips: dict[str, float]) -> dict[str, Any]:
-    plain = leave_one_out(names, ear, within)
-    with_flips = leave_one_out(names, ear, within, flips)
-    result = "valid" if plain["passed"] else "valid_with_position_flips" if with_flips["passed"] else "not_valid"
-    return {"verdict": result, "ear_only": plain, "ear_and_position_flips": with_flips}
+def classifications(names: list[str], ear: dict[str, float], within: dict[str, bool],
+                    flips: dict[str, float]) -> dict[str, Any]:
+    """Leave-one-out calls by EAR alone, and by EAR with position flips."""
+
+    return {"ear_only": leave_one_out(names, ear, within),
+            "ear_and_position_flips": leave_one_out(names, ear, within, flips)}
 
 
 def outcomes(name: str, directories: list[Path]) -> dict[str, dict[str, Any]]:
@@ -227,9 +229,9 @@ def report(config_path: Path, proxy_output: Path, output: Path) -> dict[str, Any
     table: dict[str, dict[str, Any]] = {}
     per_task: dict[str, dict[str, np.ndarray]] = {}
     losses: dict[str, np.ndarray] = {}
-    dense_flops = sum(record["replay"]["dense_flops"] for record in records)
+    dense_flops = sum(record[SAVED_KEY]["dense_flops"] for record in records)
     for name in ALL_POLICIES:
-        rows = [task_metrics(record["replay"]["policies"][name], record["answer_end"]) for record in records]
+        rows = [task_metrics(record[SAVED_KEY]["policies"][name], record["answer_end"]) for record in records]
         values = {key: np.array([row[key] for row in rows]) for key in rows[0]}
         per_task[name] = values
         scored = outcomes(name, directories)
@@ -247,29 +249,28 @@ def report(config_path: Path, proxy_output: Path, output: Path) -> dict[str, Any
             "kl": float(np.nanmean(values["kl"])),
             "lost": lost, "gained": gained, "net_loss": lost - gained,
             "pass_fraction_drop": float(np.mean([pass_fraction(dense[task]) - pass_fraction(scored[task]) for task in ids])),
-            "compute_fraction": sum(record["replay"]["flops"][name] for record in records) / dense_flops,
+            "compute_fraction": sum(record[SAVED_KEY]["flops"][name] for record in records) / dense_flops,
         }
     within = {name: table[name]["net_loss"] <= NET_LOSS_MARGIN for name in ALL_POLICIES}
     ear = {name: table[name]["ear"] for name in ALL_POLICIES}
     flips = {name: table[name]["position_flip_rate"] for name in ALL_POLICIES}
     summary: dict[str, Any] = {
         "tasks": len(records), "margin": NET_LOSS_MARGIN, "table": table, "within_margin": within,
-        "registered": verdict(list(REGISTERED), ear, within, flips),
-        "all_policies": verdict(list(ALL_POLICIES), ear, within, flips),
+        "registered": classifications(list(REGISTERED), ear, within, flips),
+        "all_policies": classifications(list(ALL_POLICIES), ear, within, flips),
     }
 
-    # Thresholds, from the registered panel; a policy's bootstrap lower bound must clear them.
+    # Thresholds, from the main panel; the search compares a policy's bootstrap lower bound with them.
     inside = [name for name in REGISTERED if within[name]]
     rng = np.random.default_rng(SEED)
     samples = rng.integers(0, len(records), size=(BOOTSTRAPS, len(records)))
     lower = {name: float(np.nanquantile(np.nanmean(per_task[name]["ear"][samples], axis=1), 0.05)) for name in ALL_POLICIES}
     thresholds = {"ear": min(ear[name] for name in inside), "tail_ear": min(table[name]["tail_ear"] for name in inside),
                   "position_flip_rate": max(flips[name] for name in inside)}
-    summary["thresholds"] = {"values": thresholds, "use_position_flips": summary["registered"]["verdict"] == "valid_with_position_flips",
-                             "usable": summary["registered"]["verdict"] != "not_valid", "ear_lower_95": lower,
+    summary["thresholds"] = {"values": thresholds, "ear_lower_95": lower,
                              "clears_ear_threshold": {name: lower[name] >= thresholds["ear"] for name in ALL_POLICIES}}
 
-    # Descriptive: the continuous question. Nothing below enters the verdict.
+    # The continuous question: does EAR track losses beyond the margin split?
     depth_family = [name for name in ALL_POLICIES if "depth" in name and "refresh" not in name]
     summary["continuous"] = {
         metric: {"all_policies": correlations(list(ALL_POLICIES), table, metric),
@@ -297,8 +298,8 @@ def report(config_path: Path, proxy_output: Path, output: Path) -> dict[str, Any
               f"{row['masked_ear']:>8.4f}  {'within' if within[name] else 'OUTSIDE'}{'' if name in REGISTERED else ' (extra)'}")
     for label in ("registered", "all_policies"):
         entry = summary[label]
-        print(f"{label}: {entry['verdict']}; false safe {entry['ear_only']['false_safe']}; "
-              f"false reject {entry['ear_only']['false_reject']}")
+        for rule in ("ear_only", "ear_and_position_flips"):
+            print(f"{label}, {rule}: false safe {entry[rule]['false_safe']}; false reject {entry[rule]['false_reject']}")
     print("continuous:", json.dumps(summary["continuous"]), "task AUROC:", summary["task_auroc"])
     return summary
 

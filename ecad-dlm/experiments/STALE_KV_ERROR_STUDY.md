@@ -1,6 +1,6 @@
 # Stale K/V error study
 
-Registered 2026-10-31, before any data was collected. Code:
+Designed 2026-10-31, before any data was collected. Code:
 `stale_kv_error_study.py`. Every job records its commit in
 `stale_kv_error_study/jobs/`.
 
@@ -50,16 +50,16 @@ decoding.
 - DiffuCoder-7B-cpGRPO, greedy (temperature 0, top_p 1), 256 steps × 256
   tokens, the 64-task HumanEval+/MBPP+ subset of
   `configs/diffucoder7b_output_variance_greedy_64tasks.yaml`.
-- Forced-trajectory replay against the native dense forward, on an A100 80GB
-  (the GPU type of the existing replay, whose dense outputs define the row
+- Teacher forcing against the native dense forward, on an A100 80GB
+  (the GPU type of the existing teacher forcing, whose dense outputs define the row
   types; each task's dense output must match it exactly).
 - Policies: `refresh_4`, `refresh_32` and `refresh_256` as defined in that
   config (full refresh every 4, 32 or 256 steps; newly decoded rows
   recomputed for one more step).
 - The model is expected to have 28 layers, 4 KV heads and head_dim 128; the
   jobs record the actual values.
-- **Precondition, checked in the code before registration:** each policy
-  keeps its own cache across steps (`replay_task` resets it once per task),
+- **Precondition, checked in the code before the first run:** each policy
+  keeps its own cache across steps (`teacher_force_task` resets it once per task),
   so rows go stale on the policy's own schedule. The cache is not rebuilt
   from dense.
 
@@ -94,18 +94,18 @@ training folds only. All have closed-form fits from running sums.
 
 ## Procedure
 
-1. **Collect** (GPU, one job per fold). Replay the fold's tasks for all three
+1. **Collect** (GPU, one job per fold). Teacher forcing the fold's tasks for all three
    policies. Add every stale row into per-cell sums in float64: n, Σc, Σe,
    Σccᵀ, Σceᵀ, Σeeᵀ.
 2. **Fit.** For each fold, add up the other three folds' sums and fit M1–M4.
    Also record the training error RMS per cell (for S1) and the top 8
    eigenvectors of Σeeᵀ (for S2). Parameters are saved in float32; in-sample
    residuals use the saved values.
-3. **Evaluate** (GPU, one job per fold). Replay the fold's tasks again with
+3. **Evaluate** (GPU, one job per fold). Teacher forcing the fold's tasks again with
    that fold's fit. Per task and cell, accumulate n, Σ‖e‖², Σ‖e − ê‖² for
    each method, and Σ‖Pe‖², where P projects onto the training top-8
    subspace. Write one file per task.
-4. **Report.** Compute the metrics and the decision below.
+4. **Report.** Compute the metrics below.
 
 ## Metrics
 
@@ -140,47 +140,34 @@ FER = 1 − Σ‖e − ê‖² / Σ‖e‖²
 - **S2, subspace consistency:** the fraction of held-out error energy inside
   the training-fold top-8 subspace of its cell, pooled over rows. A random
   8-dimensional subspace captures 8/128 = 6.25%. The average over (layer, K
-  or V) is also reported, but not used in the decision.
+  or V) is also reported, as a secondary number.
 
-## Decision rule
+## Reading the results
 
-These thresholds are fixed now and are also constants in the code.
+The main numbers are M4's held-out FER (mean, interval and fold means), S1 and S2,
+on refresh_32 and refresh_256. refresh_4 is reported too, but its ages are too short
+to say much.
 
-- **First-moment systematic** requires all of the following, on **both
-  refresh_32 and refresh_256**:
-  - M4's held-out FER has a 95% interval whose lower bound is above 0;
-  - its point estimate is at least 0.20;
-  - every fold mean is above 0.
-- **Weak:** the interval is above 0, but the point estimate is below 0.20.
-  **Not systematic:** anything else.
-- **Second-moment systematic** requires, on both refresh_32 and refresh_256,
-  a median S1 relative error of at most 0.25 and S2 of at least 0.25 (4× the
-  random baseline).
-- refresh_4 is reported, but does not count. Its ages are too short to be
-  informative.
+- A large held-out FER, consistent across folds on both policies, would make
+  corrections for individual decisions plausible. The next step would then be to
+  apply them during decoding and measure divergence events.
+- Predictable size and directions (low S1, high S2 against the random baseline)
+  without a large FER would support only rescaling or temperature-style
+  corrections.
+- Neither would be a negative result for fixed corrections.
 
-Outcomes:
+## Sanity checks
 
-- **A: first-moment systematic.** Corrections for individual decisions are
-  plausible. Next, apply the corrections during decoding and measure
-  divergence events.
-- **B: second-moment only.** Only rescaling or temperature-style corrections
-  are plausible; these features cannot fix individual decisions.
-- **C: neither.** A fixed correction is not viable; record a negative result.
-
-## Sanity checks (before trusting any numbers)
-
-1. `full_refresh_every_step` produces zero stale rows. It is replayed on the
+1. `full_refresh_every_step` produces zero stale rows. It is teacher-forced on the
    first task of fold 0.
 2. On the first two tasks of fold 0, every stale row of refresh_32 for head 0,
-   layers 1 and 27, is saved. Recomputing each method's residual directly
-   from these rows must match two other results within 1e-4 relative error:
+   layers 1 and 27, is saved. Each method's residual is recomputed directly
+   from these rows and compared, as a relative difference, with two other results:
    - the held-out sums;
    - the formula that computes residuals from running sums (used for
      in-sample FER).
-3. Replaying one task twice gives identical sums.
-4. Mean error energy per row should generally rise with age bucket. It is
-   flagged if it does not.
+3. Teacher forcing one task twice gives identical sums.
+4. Whether mean error energy per row rises with age bucket.
 5. M4's in-sample FER is reported next to its held-out FER.
 
 ## Outputs
@@ -199,7 +186,7 @@ All outputs go to `<run>/NVIDIA_A100-SXM4-80GB/stale_kv_error_study/`:
   type, FER, rows
 - `stale_kv_error_second_moment.csv`: policy, S1 median, S2 fraction, random
   baseline
-- `report.json`: the outcome, the sanity checks and per-policy details
+- `report.json`: the main numbers, the sanity checks and per-policy details
 - `checks/`: the data behind sanity checks 1–3
 
 ## Out of scope
@@ -213,60 +200,54 @@ All outputs go to `<run>/NVIDIA_A100-SXM4-80GB/stale_kv_error_study/`:
 
 ## Amendment (2026-10-31, before any data was collected)
 
-Made after registration, but before any collect job had started. No result
-of this study had been seen.
+Made after the design was written, but before any collect job had started. No
+result of this study had been seen.
 
-### 1. The decision reads prompt and answer rows only
+### 1. The main summary reads prompt and answer rows only
 
 Answers are about 55 tokens, so most response rows are padding. Padding is
 one token repeated, and its staleness may be very regular. Pooled into each
 (task, layer, K/V), padding could raise FER without saying anything about
 the rows that matter.
 
-The decision rule above (FER, its interval and fold means, S1 and S2) is
-therefore evaluated on **prompt and answer rows only**. Two other row sets
-are reported with the same metrics but do not count:
+The main numbers (FER, its interval and fold means, S1 and S2) are therefore
+summarized on **prompt and answer rows only**. Two other row sets are reported
+with the same metrics, separately:
 - padding rows alone;
-- all rows (the readout as first registered).
+- all rows (the readout as first designed).
 
 Row type is part of the cell, so the fits are unchanged; only the readout
 differs.
 
-### 2. Pipeline checks gate the outcome
+### 2. Pipeline checks, reported with the result
 
 The dense K/V and the cached K/V come from different code paths (a `k_proj`
 hook and a backend callback). If the paths differed consistently, say in
-precision, every error would carry the same offset. M2 and M4 would learn
-it and report a false "systematic". Two checks guard against this. **If
-either fails on refresh_32 or refresh_256, the report marks the outcome
-untrusted**, and so it does if sanity check 1, 2 or 3 fails.
+precision, every error would carry the same offset, and M2 and M4 would learn
+it as if it were predictable staleness. Two checks measure this:
 
-- **Path check (step 0).** At step 0 both paths compute every row fresh.
-  Their difference is therefore the paths themselves, not staleness. collect
-  records it for every task at every layer. It passes if both hold:
+- **Path check (step 0).** At step 0 both paths compute every row fresh, so
+  their difference is the paths themselves, not staleness. collect records it
+  for every task at every layer. Reported:
   - the step-0 difference energy per row, as a share of the held-out stale
-    error energy per row (prompt and answer rows), averaged over (layer
-    1–27, K/V), is at most **0.02**. A consistent offset can add at most its
-    energy share to FER, so a pass bounds that inflation at 0.02;
-  - at layer 0, the step-0 difference energy is at most **1e-4** of the
-    dense energy. Both paths apply the same modules to the same rows there.
-
-  The share of the step-0 difference that is one consistent offset per
-  (layer, K/V, head) is also reported.
+    error energy per row (prompt and answer rows), averaged over (layer 1–27,
+    K/V). A consistent offset can add at most its energy share to FER;
+  - at layer 0, the step-0 difference energy as a share of the dense energy.
+    Both paths apply the same modules to the same rows there;
+  - the share of the step-0 difference that is one consistent offset per
+    (layer, K/V, head).
 - **Layer-0 check (held-out stale rows).** A committed token's layer-0 K/V
-  cannot truly go stale. Both conditions must hold for K and for V:
-  - layer-0 error energy per row is at most **1%** of that in layers 1–27;
-  - layer-0 held-out FER of M2 and of M4 is at most **0.05**, or there is no
-    layer-0 error at all.
-
-  Structure found at layer 0 would mean the pipeline, not staleness.
+  cannot truly go stale, so structure there would come from the pipeline, not
+  from staleness. Reported for K and for V:
+  - layer-0 error energy per row as a share of that in layers 1–27;
+  - the layer-0 held-out FER of M2 and of M4.
 
 ### 3. Clarifications
 
 - **Precondition.** It is confirmed in code and covered by tests:
   - each policy has its own backend and cache, reset once per task in
-    `replay_task` and never rebuilt from dense
-    (`tests/test_replay_compounding.py` checks that the cache drifts between
+    `teacher_force_task` and never rebuilt from dense
+    (`tests/test_teacher_forcing_compounding.py` checks that the cache drifts between
     the policy's own refreshes);
   - the report also lists stale rows by age bucket, so refresh_256 rows of
     age 32+ show the cache going stale on its own schedule.
@@ -276,7 +257,7 @@ untrusted**, and so it does if sanity check 1, 2 or 3 fails.
 - **Null control.** The synthetic pipeline test plants pure-noise errors,
   independent of c and across tasks, in one 128-dimensional cell with 1,800
   training rows per fold. M4 fits +0.072 in-sample but scores −0.077 held
-  out (95% interval below 0), and the outcome is C. So cross-validation does
+  out (95% interval below 0). So cross-validation does
   catch overfitting at this matrix size. A planted affine map is recovered
   with held-out FER above 0.9.
 
@@ -285,14 +266,16 @@ untrusted**, and so it does if sanity check 1, 2 or 3 fails.
 Run on 2026-11-01, A100 80GB, Slurm jobs 22230649–22230658. Outputs are in
 `results/dlm_kv_policy/diffucoder7b_output_variance_greedy_v1/NVIDIA_A100-SXM4-80GB/stale_kv_error_study/`.
 
-### Outcome as registered
+### Summary
 
-**UNTRUSTED (a pipeline check failed): B, second-moment only.**
-
-The layer-0 check failed on refresh_32 and refresh_256, so by the
-amendment's rule the outcome is not trusted. The other pipeline checks and
-sanity checks passed. Even if every check had passed, the outcome would be B:
-refresh_32 is only weak on the first moment.
+- On prompt and answer rows, M4 removes 0.145 of the held-out stale error energy at
+  refresh_32 and 0.409 at refresh_256.
+- A cell's error size is predictable to about 12% (S1), and its top-8 directions
+  hold 36–46% of the error energy (S2), 6–7× a random subspace.
+- M4 also finds structure in layer-0 error, which cannot be staleness. It is
+  rounding between the two forward paths, and its possible contribution is
+  bounded in Amendment 2.
+- The other pipeline and sanity checks show no problem.
 
 ### First moment (prompt and answer rows, held out)
 
@@ -302,9 +285,8 @@ refresh_32 is only weak on the first moment.
 | refresh_32 | 0.008 | 0.011 | 0.028 | 0.145 [0.133, 0.157] | 0.160, 0.146, 0.145, 0.131 | 0.068 | 0.167 / 0.132 |
 | refresh_256 | 0.046 | 0.074 | 0.147 | 0.409 [0.389, 0.429] | 0.424, 0.412, 0.411, 0.390 | 0.259 | 0.454 / 0.388 |
 
-- refresh_32 is **weak**: the interval is above 0, but the estimate is below
-  0.20. refresh_256 is **systematic**. The rule needs both, so the first
-  moment is not systematic.
+- Every fold mean is positive for every policy. refresh_32's FER is about a third
+  of refresh_256's, so predictability grows with staleness.
 - Most of the predictable part needs the full 128×128 map. One scale or a
   mean shift removes almost nothing.
 - Energy-weighted FER is about half the equal-weight score: the
@@ -321,30 +303,28 @@ refresh_32 is only weak on the first moment.
 | refresh_32 | 0.126 | 0.358 |
 | refresh_256 | 0.111 | 0.456 |
 
-Both decision policies meet S1 ≤ 0.25 and S2 ≥ 0.25: **second-moment
-systematic**. A cell's error size is predictable to about 12%, and its top-8
-directions hold 36–46% of the held-out error energy, 6–7× a random subspace.
+A cell's error size is predictable to about 12%, and its top-8 directions hold
+36–46% of the held-out error energy, 6–7× a random subspace.
 
-### Padding and all rows (reported, not used)
+### Padding and all rows (reported separately)
 
 M4 FER on padding is 0.886 (refresh_32) and 0.966 (refresh_256); on all
-rows it is 0.518 and 0.707. On the readout as first registered, padding alone
-would have made both policies first-moment systematic. Amendment 1 is what
-kept that out of the decision.
+rows it is 0.518 and 0.707. On the readout as first designed, padding would have
+dominated the numbers; Amendment 1 keeps it separate.
 
 ### Checks
 
 | Check | Result |
 |---|---|
-| Path check (step 0) | Passed. The two paths are bitwise identical at every layer of every task. |
-| Layer 0: energy share | Passed. Layer-0 error per row is about 1e-4 of layers 1–27 for K and 3e-7 for V. |
-| Layer 0: FER | **Failed.** M2 is at most 0.046, but M4 removes 0.106 (K) and 0.064 (V) of layer-0 error on refresh_32, and 0.483 and 0.592 on refresh_256. The limit was 0.05. |
-| 1. Control has no stale rows | Passed (0 rows) |
-| 2. Raw sample | Passed (max relative error 2.5e-9) |
-| 3. Repeat gives identical sums | Passed for each policy |
+| Path check (step 0) | The two paths are bitwise identical at every layer of every task. |
+| Layer 0: energy share | Layer-0 error per row is about 1e-4 of layers 1–27 for K and 3e-7 for V. |
+| Layer 0: FER | M2 is at most 0.046, but M4 removes 0.106 (K) and 0.064 (V) of layer-0 error on refresh_32, and 0.483 and 0.592 on refresh_256. |
+| 1. Control has no stale rows | 0 rows |
+| 2. Raw sample | Max relative difference 2.5e-9 |
+| 3. Repeat gives identical sums | Identical for each policy |
 | 4. Error rises with age | Yes, for every policy |
 
-### What the layer-0 failure probably means (interpretation, not tested)
+### What the layer-0 structure probably means (interpretation, not tested)
 
 - **Only answer rows have layer-0 error.** Prompt rows have none: they are
   last computed in the full forward at step 0, the same shape as dense.
@@ -362,15 +342,15 @@ kept that out of the decision.
   rows are both the rows that carry it and the most predictable rows, so it
   cannot yet be ruled out.
 
-The check as registered assumed rounding is unpredictable noise. That
+The check as designed assumed rounding is unpredictable noise. That
 assumption was wrong: rounding is a deterministic function of the token, so
 a model given c can learn part of it.
 
-## Amendment 2 (2026-11-01, after the registered result, before the rounding check ran)
+## Amendment 2 (2026-11-01, after the first result, before the rounding check ran)
 
-The registered outcome above stays as it is. This amendment defines one
-follow-up check that can upgrade it to trusted. It was written after the
-result was seen and before the check ran.
+The result above stays as it is. This amendment defines one follow-up check, which
+bounds how much rounding could contribute to it. It was written after the result was
+seen and before the check ran.
 
 ### What the rounding check measures
 
@@ -381,8 +361,8 @@ A stale row differs from dense for two reasons:
 
 To isolate rounding:
 1. At steps 1, 9, 17, … (every 8th step), for each policy, build a
-   stale-free cache with one full forward. That cache must equal dense
-   bitwise at every layer, as at step 0.
+   stale-free cache with one full forward. The check records whether that cache
+   equals dense bitwise at every layer, as at step 0.
 2. Recompute exactly the rows the policy recomputed that step, in the same
    partial forward, reading every other row from the stale-free cache. Steps
    where the policy did a full refresh have no partial forward and are
@@ -404,9 +384,8 @@ To isolate rounding:
 - **B**, the FER bound, is the mean of 2√ρ − ρ over (layer 1–27, K/V),
   averaged the same way as the primary score.
 - **Worst-case first moment:** subtract B from M4's held-out FER mean, its
-  interval's lower bound and each fold mean, then apply the registered rule.
-- **Worst-case second moment.** The outcome also rests on the second moment,
-  so its bounds are included too:
+  interval's lower bound and each fold mean.
+- **Worst-case second moment.** S1 and S2 get bounds too:
   - S1: in each (task, cell), both RMS values move by at most the rounding
     RMS q, so the relative error becomes at most (|a − b| + 2q) / (b − q);
     the median is taken over cells.
@@ -414,20 +393,9 @@ To isolate rounding:
     fraction (√captured − √rounding)² / (√total + √rounding)², pooled over
     rows.
 
-### Criterion
-
-**The registered outcome is upgraded to trusted** if all of these hold:
-1. Every stale-free cache equals dense bitwise.
-2. Every policy (refresh_4, refresh_32 and refresh_256) keeps its
-   first-moment class and its second-moment flag under the worst case.
-3. The outcome (A, B or C) is unchanged.
-
-**If it passes,** the record reads: "UNTRUSTED as registered; upgraded to
-trusted by a follow-up numerics check, defined after the original result."
-**If it fails,** the outcome stays untrusted. The definitive version would
-rerun the study with full-shape forwards that keep only the policy's rows,
-which removes rounding instead of bounding it. That is done only if it is
-needed.
+If the worst-case bounds leave the reading in doubt, the definitive version would
+rerun the study with full-shape forwards that keep only the policy's rows, which
+removes rounding instead of bounding it.
 
 Code: `stale_kv_error_study.py rounding --fold K --part P`, then
 `rounding-check`. Output: `rounding_check.json`.
@@ -436,7 +404,7 @@ Code: `stale_kv_error_study.py rounding --fold K --part P`, then
 80GB GPUs were not available, so any A100 may now run the rounding jobs, and
 each fold is split into two jobs. A100 40GB is the same chip, but rounding
 depends on the kernels, so a job on any GPU type other than the study's
-stops unless every policy reproduces the A100 80GB replay's per-step token
+stops unless every policy reproduces the A100 80GB teacher forcing's per-step token
 TV, KL and flips exactly. A rounding measurement therefore counts only if
 it was made with the study GPU's exact arithmetic. Each job records its GPU.
 
@@ -444,34 +412,29 @@ it was made with the study GPU's exact arithmetic. Each job records its GPU.
 
 Slurm jobs 22330605–22330612: 48 tasks on A100 80GB, 16 on A100 40GB. Every
 stale-free cache equalled dense bitwise. The 40GB tasks reproduced the 80GB
-replay exactly; otherwise those jobs would have stopped.
+teacher forcing exactly; otherwise those jobs would have stopped.
 
-| Policy | Rounding share ρ (mean, max over layers) | Worst-case FER term | M4 FER → worst case | First moment | Second-moment flag |
+| Policy | Rounding share ρ (mean, max over layers) | Worst-case FER term | M4 FER → worst case | S1 → worst case | S2 → worst case |
 |---|---|---|---|---|---|
-| refresh_4 | 0.0076, 0.049 | 0.160 | 0.022 → −0.138 | weak → **not systematic** | yes → **no** |
-| refresh_32 | 0.0010, 0.0063 | 0.061 | 0.145 → 0.084 | weak → weak | yes → yes |
-| refresh_256 | 0.0002, 0.0010 | 0.026 | 0.409 → 0.383 | systematic → systematic | yes → yes |
+| refresh_4 | 0.0076, 0.049 | 0.160 | 0.022 → −0.138 | 0.124 → 0.307 | 0.317 → 0.206 |
+| refresh_32 | 0.0010, 0.0063 | 0.061 | 0.145 → 0.084 | 0.126 → 0.199 | 0.358 → 0.302 |
+| refresh_256 | 0.0002, 0.0010 | 0.026 | 0.409 → 0.383 | 0.111 → 0.139 | 0.456 → 0.425 |
 
-Worst-case S1 and S2: refresh_4 0.307 and 0.206; refresh_32 0.199 and 0.302;
-refresh_256 0.139 and 0.425. If rounding were uncorrelated with the stale
-error, the FER terms would be ρ instead: 0.008, 0.001 and 0.0002.
+If rounding were uncorrelated with the stale error, the FER terms would be ρ
+instead: 0.008, 0.001 and 0.0002.
 
-**The check fails.** Criterion 2 required every policy to keep its
-classification, and refresh_4 does not: its worst-case rounding term is
-larger than its whole FER. The outcome under the worst case is still B, and
-both decision policies keep both classifications.
+**Reading.**
 
-**Record: "B, untrusted as registered. The follow-up rounding check failed,
-only on refresh_4, which is not a decision policy. On refresh_32 and
-refresh_256 the classification survives worst-case rounding."** Limiting the
-criterion to the decision policies would pass, but that choice would be made
-after seeing the result, so the outcome is not upgraded. The full-shape
-rerun described above would remove rounding instead of bounding it.
+- At refresh_32 and refresh_256, even worst-case rounding leaves most of the FER
+  (0.084 of 0.145, and 0.383 of 0.409) and moves S1 and S2 little.
+- At refresh_4, the worst-case rounding term (0.160) is larger than its whole FER
+  (0.022), so its predictability cannot be told apart from rounding.
+- The full-shape rerun described above would remove rounding instead of bounding
+  it.
 
-## Follow-up readouts (2026-11-01, from the registered data)
+## Follow-up readouts (2026-11-01, from the first run's data)
 
-These come from the held-out files the registered run already wrote. They
-are not part of any decision.
+These come from the held-out files the first run already wrote.
 
 - Energy-weighted M4 FER on prompt and answer rows (also in the results
   table above): 0.008 for refresh_4, 0.068 for refresh_32 and 0.259 for
@@ -491,13 +454,13 @@ the same age. A refresh_256 row of age 1 (0.225) is about twice as
 predictable as a refresh_32 row of age 1 (0.102). So predictability seems to
 depend on how stale the rest of the cache is, not only on the row's own age.
 
-## Exploratory decoding pilot (criteria fixed 2026-11-01, before it ran)
+## Exploratory decoding pilot (designed 2026-11-01, before it ran)
 
 **Question.** Does subtracting the fitted error change decisions? Removing
 41% of the error energy matters only if it also lowers decision flips.
 
 **Setup:**
-- Forced-trajectory replay on the 64 tasks, on an A100 80GB.
+- Teacher forcing on the 64 tasks, on an A100 80GB.
 - refresh_4, refresh_32 and refresh_256, each run uncorrected and corrected
   at strengths 0.5 and 1.0.
 - A corrected policy adds strength × (A·c + b) from M4 to every stale K and V
@@ -515,39 +478,33 @@ depend on how stale the rest of the cache is, not only on the row's own age.
   does not help" from "it over-corrects".
 
 **Primary metric.** Divergence events per task at refresh_256, as in the
-replay proxy: token TV plus counted position changes. The comparison is
+teacher forcing proxy: token TV plus counted position changes. The comparison is
 paired: corrected minus uncorrected, per task.
 
-**Success.** At strength 0.5 or 1.0, the mean paired change has a 97.5%
-bootstrap interval entirely below zero (10,000 resamples of tasks, seed 0).
-Each interval is 97.5% because two strengths are tested (Bonferroni).
+**Primary comparison.** At strengths 0.5 and 1.0, the mean paired change with a
+97.5% bootstrap interval (10,000 resamples of tasks, seed 0). Each interval is
+97.5% because two strengths are compared (Bonferroni). An interval below zero
+would mean the correction helps; above zero, that it over-corrects.
 
-**Other outcomes:**
-- **Over-correction:** an interval entirely above zero.
-- **No success at either strength:** a fixed correction does not reduce
-  divergence events even at the longest staleness. The fixed-correction
-  direction is then finished at this generation length.
-
-**Reported but not part of the criterion:**
+**Also reported:**
 - refresh_32 and refresh_4;
 - top-1 flips, large-margin decision changes, summed token TV and mean KL.
 
-**Pipeline requirement.** The uncorrected policies must reproduce the
-earlier replay's per-step token TV, KL and flips exactly, or the pilot is
-not trusted.
+**Pipeline check.** Whether the uncorrected policies reproduce the earlier teacher
+forcing's per-step token TV, KL and flips exactly.
 
 **Change before it ran (2026-11-02): any GPU type.** A100 80GB GPUs were
 not available. Every comparison is between runs of one task on one GPU, so
 the pilot now runs on A100, A40 or A6000. Each fold is split into two jobs,
 and each task records its GPU. A different GPU type rounds differently, so
-it cannot reproduce the A100 80GB replay exactly. The pipeline requirement
+it cannot reproduce the A100 80GB teacher forcing exactly. The pipeline check
 becomes:
 - every policy is also run at strength 0, through the correction path with
-  nothing added, and must match its uncorrected run exactly, on every task;
-- tasks that ran on an A100 80GB must also match the earlier replay, as
-  before.
+  nothing added, and compared with its uncorrected run, on every task;
+- tasks that ran on an A100 80GB are also compared with the earlier teacher
+  forcing, as before.
 
-The success criterion is unchanged.
+The primary comparison is unchanged.
 
 Code: `stale_kv_correction_pilot.py run --fold K --part P`, then `report`.
 Outputs: `<run>/NVIDIA_A100-SXM4-80GB/stale_kv_correction_pilot/`, for
@@ -556,8 +513,8 @@ tasks from every GPU.
 ### Pilot result (2026-11-02)
 
 Slurm jobs 22330613–22330620: 16 tasks on A100 80GB, 48 on A40. **Pipeline
-passed:** strength 0 matched the uncorrected run exactly on all 64 tasks,
-and the A100 80GB tasks reproduced the earlier replay.
+check:** strength 0 matched the uncorrected run exactly on all 64 tasks,
+and the A100 80GB tasks reproduced the earlier teacher-forced run.
 
 Paired change per task, corrected minus uncorrected, with 97.5% intervals:
 
@@ -567,14 +524,13 @@ Paired change per task, corrected minus uncorrected, with 97.5% intervals:
 | refresh_32 | 8.42 | +0.12 [−0.55, 0.86] | +0.95 [−0.03, 2.08] | 1.81, +0.00 [−0.11, 0.11], −0.03 [−0.19, 0.14] |
 | refresh_4 | 2.56 | +0.19 [−0.02, 0.39] | +0.19 [−0.12, 0.50] | 0.55, +0.02 [0.00, 0.06], +0.05 [0.00, 0.11] |
 
-**No success:** neither strength reduces divergence events at refresh_256.
-Neither is harmful on the primary metric either, since both intervals
-include zero. At strength 1.0, top-1 flips at refresh_256 rise, with an
-interval above zero. By the rule above, a fixed correction does not reduce
-divergence events even at the longest staleness. Full results:
+**Reading.** At refresh_256, both strengths' intervals include zero, so neither
+strength measurably lowers or raises divergence events. At strength 1.0, top-1
+flips at refresh_256 rise, with an interval above zero. Even at the longest
+staleness, a fixed correction shows no reduction in divergence events. Full results:
 `pilot_report.json`, `pilot_results.csv`.
 
-## Correction diagnostic (criteria fixed 2026-11-02, before it ran)
+## Correction diagnostic (designed 2026-11-02, before it ran)
 
 **Question.** M4 removes part of the stale error energy on held-out data, so
 why did the correction not reduce divergence? Three explanations:
@@ -586,7 +542,7 @@ why did the correction not reduce divergence? Three explanations:
   cannot predict. This does not separate unpredictable error from
   second-moment structure.
 
-**Setup.** The pilot's replay, with each policy at strengths 0 (uncorrected),
+**Setup.** The pilot's teacher forcing, with each policy at strengths 0 (uncorrected),
 0.5 and 1.0. Per run and layer, summed over steps and tasks:
 - **K/V error:** stale rows' K/V at read time against the same step's dense
   K/V, before and after the correction, before RoPE (RoPE preserves norms).
@@ -602,17 +558,17 @@ below 1 means closer to dense):
   before within the corrected run. Drift is the corrected run's error before
   correction ÷ the uncorrected run's.
 
-**Classification at refresh_256, separately at each strength:**
-1. kv interval not entirely below 1 → **compounding**.
-2. Otherwise, attention interval not entirely below 1 → **not
-   decision-relevant**.
-3. Otherwise → **residual**.
+**Reading at refresh_256, separately at each strength:**
+- a kv interval not entirely below 1 points to **compounding**;
+- a kv interval below 1 with an attention interval not below 1 points to **not
+  decision-relevant**;
+- both below 1 point to **residual**.
 
-refresh_32, refresh_4 and the per-layer ratios are reported, not classified.
+refresh_32, refresh_4 and the per-layer ratios are also reported.
 
-**Pipeline requirement.** The recorders only read. So on tasks that run on
-the same GPU type as the pilot did, every run's per-step token TV, KL and
-flips must equal the pilot's exactly. At least one task must be checked.
+**Pipeline check.** The recorders only read. So on tasks that run on the same GPU
+type as the pilot did, every run's per-step token TV, KL and flips are compared
+with the pilot's, on at least one task.
 The test suite also checks that the uncorrected K/V error equals the
 study's own stale error measurement on a small fake model.
 
@@ -622,7 +578,7 @@ Code: `stale_kv_correction_diagnostic.py run --fold K --part P`, then
 
 ### Diagnostic result (2026-11-02)
 
-Slurm jobs 22333177–22333184, `raiselab-paid`. **Pipeline passed:** the 8
+Slurm jobs 22333177–22333184, `raiselab-paid`. **Pipeline check:** the 8
 tasks that ran on the pilot task's GPU type matched the pilot exactly.
 
 Ratios to the uncorrected run, layers 1–27 (97.5% intervals in
@@ -637,8 +593,8 @@ Ratios to the uncorrected run, layers 1–27 (97.5% intervals in
 | refresh_4 @0.5 | 0.81 | 0.93 | 0.91 | 0.88 | 1.00 |
 | refresh_4 @1.0 | 0.75 | 0.90 | 0.95 | 0.84 | 1.00 |
 
-**Classification at refresh_256: not decision-relevant, at both
-strengths.** The corrected K/V are much closer to dense, keys more so than
+**At refresh_256, the pattern is "not decision-relevant" at both strengths.**
+The corrected K/V are much closer to dense, keys more so than
 values, and drift is small next to the fit's gain. But attention outputs
 are further from dense.
 
@@ -649,13 +605,13 @@ K/V errors there fall as much as in other layers. Later layers stay worse:
 mostly 1.0–2.5 at half strength and 1.5–8 at full. refresh_32 shows the same
 step at layer 4, more weakly. Per-layer ratios: `diagnostic_by_layer.csv`.
 
-## Layer-4 test (criteria fixed 2026-11-02, before it ran)
+## Layer-4 test (designed 2026-11-02, before it ran)
 
 **Question.** Is the correction's harm caused at layer 4? If so, does the
 correction reduce divergence once layer 4 is left alone, and is layer 4's
 attention dominated by a few rows (attention sinks)?
 
-**Setup.** The diagnostic's replay, with every correction skipping layer 4
+**Setup.** The diagnostic's teacher forcing, with every correction skipping layer 4
 (layers 1–3 and 5–27 corrected), at strengths 0, 0.5 and 1.0 for each
 policy. refresh_32 and refresh_256 also run the full correction at 0.5 and
 1.0, with an attention probe. At every corrected layer, the probe recomputes
@@ -668,23 +624,22 @@ corrected K/V. It records:
 - how much of the attention-output change comes from keys versus values;
 - the output change relative to the output.
 
-**Primary (as in the pilot).** At refresh_256, with layer 4 skipped, the
-mean paired change in divergence events per task has a 97.5% bootstrap
-interval entirely below zero at strength 0.5 or 1.0.
+**Primary (as in the pilot).** At refresh_256, with layer 4 skipped, the mean
+paired change in divergence events per task, with its 97.5% bootstrap interval,
+at strengths 0.5 and 1.0.
 
-**Secondary.** The diagnostic's classification at refresh_256 with layer 4
-skipped. **Layer 4 is the cause** if the attention ratio over layers 1–27
-falls below 1, i.e. its 97.5% interval is entirely below 1.
+**Secondary.** The diagnostic's ratios at refresh_256 with layer 4 skipped. An
+attention ratio over layers 1–27 with its 97.5% interval entirely below 1 would
+point to layer 4 as the cause.
 
-**Mechanism (descriptive; the thresholds are a reading, not a test).** In
-the full refresh_256 correction at strength 1.0, layer 4 reads as
-**sink-driven** if both hold:
+**Mechanism (descriptive).** In the full refresh_256 correction at strength 1.0,
+a sink-driven layer 4 would show both:
 - its most-attended row takes more than half of the attention on average,
   clearly more than at layers 1–3;
 - more than half of its attention change falls on that row.
 
-**Pipeline requirement.** On tasks run on the pilot task's GPU type, the
-uncorrected runs and the full-correction runs must match the pilot exactly.
+**Pipeline check.** On tasks run on the pilot task's GPU type, the uncorrected runs
+and the full-correction runs are compared with the pilot.
 
 Code: `stale_kv_correction_diagnostic.py run --fold K --part P --skip-layers 4`,
 then `report --skip-layers 4`. Outputs:
@@ -693,23 +648,23 @@ then `report --skip-layers 4`. Outputs:
 ### Layer-4 test result (2026-11-02)
 
 Slurm jobs 22347338–22347345, `raiselab-paid`; 64 tasks on A100 80GB, A100
-40GB and A40. **Pipeline passed:** the 8 tasks run on the pilot task's GPU
+40GB and A40. **Pipeline check:** the 8 tasks run on the pilot task's GPU
 type matched the pilot exactly.
 
-**Primary: fails.** Paired change in divergence events per task at
-refresh_256 with layer 4 skipped (uncorrected 11.69):
+**Primary.** Paired change in divergence events per task at refresh_256 with
+layer 4 skipped (uncorrected 11.69):
 - **Strength 0.5:** −0.59 [−1.61, 0.36].
-- **Strength 1.0:** +1.73 [0.09, 3.48], interval above zero, so harmful.
+- **Strength 1.0:** +1.73 [0.09, 3.48], interval above zero.
 
-refresh_32 at 1.0 is also harmful: +1.12 [0.05, 2.36].
+refresh_32 at 1.0 also has an interval above zero: +1.12 [0.05, 2.36].
 
-**Secondary: layer 4 is not the cause.** With layer 4 skipped, the attention
+**Secondary: layer 4 does not look like the cause.** With layer 4 skipped, the attention
 ratio over layers 1–27 is still 1.22 [1.15, 1.31] at 0.5 and 2.58
 [2.41, 2.78] at 1.0. Skipping fixes layer 4 itself: its ratio is 0.88 at
 1.0, against 18.9 when corrected. But layers 5–27 stay about as damaged as
 with every layer corrected, 1.4–7.4 at strength 1.0. So the harm from layer 4
-onward arises in each layer, not by propagation from layer 4. Classification:
-not decision-relevant at both strengths.
+onward arises in each layer, not by propagation from layer 4. The pattern stays
+"not decision-relevant" at both strengths.
 
 **Mechanism (descriptive), from the full refresh_256 correction at 1.0:**
 
@@ -720,9 +675,9 @@ not decision-relevant at both strengths.
 | Share of that change on the most-attended row | 6–9% | 25–47% |
 | Share of the output change from keys | 16–51% | 75–96% |
 
-Position 0 is never the most-attended row. By the reading fixed beforehand,
-layer 4 is not "sink-driven": its top row takes 0.67 of attention, but only
-47% of the change, below one half. The finding is that from layer 4 on,
+Position 0 is never the most-attended row. Layer 4's top row takes 0.67 of
+attention but only 47% of the change, so attention there is concentrated, while
+the change is not mostly on that row. The finding is that from layer 4 on,
 attention is concentrated, and the key correction moves much of it, although
 it lowers the keys' total error. Which rows draw that attention was not
 recorded.

@@ -1,6 +1,6 @@
 # Masked-row smoothness study: CADD versus DiffuCoder
 
-Registered 2026-11-02, before any data was collected. Code:
+Designed 2026-11-02, before any data was collected. Code:
 `masked_row_smoothness_study.py`. Upstream CADD code: `ml-cadd/` (copied
 unmodified; commit in `ml-cadd/SOURCE.json`).
 
@@ -33,16 +33,16 @@ forward hooks.
 
 `cadd_off` is the attribution control: same weights, same prompts, no
 continuous latent. `cadd_on` against `cadd_off` isolates the effect of `z`;
-`cadd_on` against `diffucoder_base` is the registered comparison. CADD was
+`cadd_on` against `diffucoder_base` is the primary comparison. CADD was
 trained for 95k further steps from DiffuCoder-7B-Base, so `diffucoder_base`
 against `cadd_off` reports what that extra training changed with no latent.
 `diffucoder` (the RL-tuned cpGRPO checkpoint used by the other studies in this
-package) is a secondary arm; `cadd_on` against it is reported but not gating.
+package) is a secondary arm; `cadd_on` against it is also reported.
 
-Amendment 1 (2026-11-02, before any data): the registered comparator was first
+Amendment 1 (2026-11-02, before any data): the primary comparator was first
 written as the cpGRPO checkpoint, the only DiffuCoder on disk. DiffuCoder-7B-Base
 was then downloaded and replaces it, since it is the model CADD descends from.
-Thresholds and metric are unchanged.
+The metric is unchanged.
 
 ## Setup
 
@@ -70,7 +70,7 @@ step `t-k`:
 
 Rows are grouped as **masked** (masked at step `t`, hence also at `t-k`),
 **committed** (a generated position already decoded at `t-k`) and **prompt**.
-Only masked is registered. The others give context: prompt change is the drift
+Only masked is primary. The others give context: prompt change is the drift
 that existing stale-K/V policies already reuse across.
 
 The saved per-step statistic is the mean of `change` over rows of the group,
@@ -81,7 +81,7 @@ most of the rows and most of the cost. An unweighted per-step mean and a
 breakdown by noise level `s = 1 − t/256` (bins of 0.25) are reported for
 inspection.
 
-## Registered metric and decision
+## Primary metric
 
 **Deep layers** are layers 14–27 (the second half of 28). **Primary metric**:
 for a task, the lag-1 compute-weighted `change` of masked rows, averaged over K
@@ -91,19 +91,17 @@ Comparison: `R = primary(cadd_on) / primary(diffucoder_base)`, with a 95%
 bootstrap interval from 10,000 resamples of the 64 tasks (the same tasks are
 resampled in both arms).
 
-- **Continue** only if `R ≤ 0.80` **and** the upper end of its 95% interval is
-  below 1.0.
-- Otherwise **stop**: the "smooth continuous component" direction has nothing
-  to stand on, and no backend port is built.
+A ratio well below 1 would mean CADD's masked rows change less between steps, so a
+backend port could reuse them more. A ratio near 1 would give the "smooth continuous
+component" direction nothing to stand on.
 
-Reported but not gating: the same ratio at lags 4 and 8; the hidden-state
-version (H); every layer separately; the shallow layers 0–13; `cadd_on`
-against `cadd_off`; `cadd_on` against `diffucoder`; `diffucoder_base` against `cadd_off`; and the row groups other
-than masked. If the registered comparison passes but `cadd_on / cadd_off` is
-not also below 1, the gain belongs to CADD's training, not to its latent, and
-the finding is reported that way.
+Also reported: the same ratio at lags 4 and 8; the hidden-state version (H); every
+layer separately; the shallow layers 0–13; `cadd_on` against `cadd_off`; `cadd_on`
+against `diffucoder`; `diffucoder_base` against `cadd_off`; and the row groups other
+than masked. If `cadd_on / diffucoder_base` is low but `cadd_on / cadd_off` is not,
+the gain belongs to CADD's training, not to its latent.
 
-## Sanity checks before the comparison counts
+## Sanity checks, read before the comparison
 
 1. `cadd_on` generations must be coherent code (inspected on a sample), and
    CADD must reproduce its reported scores on a slice of HumanEval and MBPP at

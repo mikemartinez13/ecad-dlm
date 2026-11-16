@@ -98,8 +98,8 @@ class EvolutionTests(unittest.TestCase):
             self.assertTrue(second["complete"])
             self.assertTrue((Path(directory) / "resume" / "evolution" / "generations" / "generation_001.json").is_file())
 
-    def test_replay_objective_scores_a_generation_without_evalplus(self) -> None:
-        def fake_replay(model, tokenizer, tasks, policies, generation, device, task_dir):
+    def test_teacher_forcing_objective_scores_a_generation_without_evalplus(self) -> None:
+        def fake_teacher_forcing(model, tokenizer, tasks, policies, generation, device, task_dir):
             # Longer refresh intervals: cheaper but more divergent.
             rows = {
                 name: [{"token_tv": policy.cache_reloading_step / 4, "kl": 0.0, "kl_masked_mean": 0.0,
@@ -116,24 +116,24 @@ class EvolutionTests(unittest.TestCase):
             tasks: list = []
 
             def prepare_evolution_baseline(self, reuse_baseline):
-                raise AssertionError("The replay objective needs no dense baseline")
+                raise AssertionError("The teacher forcing objective needs no dense baseline")
 
         root = Path(__file__).resolve().parents[1] / 'experiments'
         config = load_kv_policy_experiment_config(root / "configs" / "diffucoder7b_dkv_decode_nsga2_search_64tasks_8populations.yaml")
-        config.evolution.quality_objective = "replay_divergence"
+        config.evolution.quality_objective = "teacher_forcing_divergence"
         config.evolution.population_size = 4
         config.evolution.generations = 2
         evaluator = FakeEvaluator()
         evaluator.config = config
         with TemporaryDirectory() as directory, mock.patch(
-            "evolution.nsga2_kv_policy_search.replay_policies", fake_replay
+            "evolution.nsga2_kv_policy_search.teacher_force_policies", fake_teacher_forcing
         ):
             config.run.output_dir = directory
-            config.run.name = "replay"
+            config.run.name = "teacher_forcing"
             result = run_kv_policy_nsga2_search(config, evaluator, reuse_baseline=None, generations_this_job=2)
         self.assertTrue(result["complete"])
         pareto = result["last_generation"]["pareto"]
-        self.assertEqual(result["last_generation"]["quality_objective"], "replay_divergence")
+        self.assertEqual(result["last_generation"]["quality_objective"], "teacher_forcing_divergence")
         self.assertTrue(all(item["objectives"]["quality_loss"] > 0 for item in pareto))
 
 

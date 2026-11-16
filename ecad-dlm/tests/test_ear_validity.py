@@ -7,10 +7,10 @@ import torch.nn.functional as F
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
 from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
-from dlm_kv_policy.forced_trajectory_replay import expected_acceptance, replay_task
-from experiments.ear_validity import ALL_POLICIES, REGISTERED, leave_one_out, pass_fraction, task_metrics, verdict
+from dlm_kv_policy.teacher_forcing import expected_acceptance, teacher_force_task
+from experiments.ear_validity import ALL_POLICIES, REGISTERED, classifications, leave_one_out, pass_fraction, task_metrics
 from test_backend_cpu import FakeModel
-from test_replay_compounding import greedy_sample_tokens
+from test_teacher_forcing_compounding import greedy_sample_tokens
 
 # The sampler looks up sample_tokens in the module that defines the model class.
 sample_tokens = greedy_sample_tokens
@@ -42,8 +42,8 @@ class ExpectedAcceptanceTests(unittest.TestCase):
         self.assertAlmostEqual(expected_acceptance(p.log(), p.log()).item(), 0.5)
 
 
-class ReplayLoggingTests(unittest.TestCase):
-    def test_replay_logs_ear_at_each_committed_position(self) -> None:
+class TeacherForcingLoggingTests(unittest.TestCase):
+    def test_teacher_forcing_logs_ear_at_each_committed_position(self) -> None:
         torch.manual_seed(1)
         model = FakeModel().eval()
         for parameter in model.parameters():
@@ -56,7 +56,7 @@ class ReplayLoggingTests(unittest.TestCase):
         prompt = torch.tensor([[4, 5, 6]])
         backends = {"same": DiffuCoderActiveTokenKVBackend(model, DKVDecodeRefreshPolicy(cache_reloading_step=1)),
                     "stale": DiffuCoderActiveTokenKVBackend(model, DKVDecodeRefreshPolicy(cache_reloading_step=256))}
-        result = replay_task(model, sampler, backends, prompt, torch.ones_like(prompt), generation, None, answer_end=6)
+        result = teacher_force_task(model, sampler, backends, prompt, torch.ones_like(prompt), generation, None, answer_end=6)
         same, stale = result["policies"]["same"], result["policies"]["stale"]
         self.assertEqual(sorted(p for row in same for p in row["committed_positions"]), list(range(12)))
         self.assertTrue(all(len(row["ear"]) == len(row["committed_positions"]) for row in same))
@@ -85,14 +85,13 @@ class ReportTests(unittest.TestCase):
     def test_task_with_no_answer_has_no_ear(self) -> None:
         self.assertTrue(task_metrics([row([0.9], [0])], 0)["ear"] != task_metrics([row([0.9], [0])], 0)["ear"])
 
-    def test_separated_panel_is_valid_with_one_rejected_policy(self) -> None:
+    def test_separated_panel_rejects_only_the_lowest_within_margin_policy(self) -> None:
         names = ["a", "b", "c", "x", "y"]
         ear = {"a": 0.99, "b": 0.98, "c": 0.97, "x": 0.90, "y": 0.80}
         within = {"a": True, "b": True, "c": True, "x": False, "y": False}
         result = leave_one_out(names, ear, within)
         self.assertEqual(result["false_safe"], [])
         self.assertEqual(result["false_reject"], ["c"])  # the lowest within-margin policy, held out
-        self.assertTrue(result["passed"])
 
     def test_outside_policy_above_the_threshold_is_false_safe(self) -> None:
         names = ["a", "b", "x"]
@@ -100,19 +99,20 @@ class ReportTests(unittest.TestCase):
         within = {"a": True, "b": True, "x": False}
         result = leave_one_out(names, ear, within)
         self.assertEqual(result["false_safe"], ["x"])
-        self.assertFalse(result["passed"])
 
-    def test_position_flips_can_rescue_the_verdict(self) -> None:
+    def test_position_flips_can_separate_what_ear_alone_does_not(self) -> None:
         names = ["a", "b", "x"]
         ear = {"a": 0.99, "b": 0.95, "x": 0.97}
         within = {"a": True, "b": True, "x": False}
-        self.assertEqual(verdict(names, ear, within, {"a": 0.1, "b": 0.1, "x": 0.5})["verdict"], "valid_with_position_flips")
-        self.assertEqual(verdict(names, ear, within, {"a": 0.1, "b": 0.1, "x": 0.1})["verdict"], "not_valid")
+        separated = classifications(names, ear, within, {"a": 0.1, "b": 0.1, "x": 0.5})
+        self.assertEqual(separated["ear_only"]["false_safe"], ["x"])
+        self.assertEqual(separated["ear_and_position_flips"]["false_safe"], [])
+        self.assertEqual(classifications(names, ear, within, {"a": 0.1, "b": 0.1, "x": 0.1})["ear_and_position_flips"]["false_safe"], ["x"])
 
     def test_pass_fraction_pools_base_and_plus_tests(self) -> None:
         self.assertAlmostEqual(pass_fraction({"base_passed": 5, "base_total": 10, "plus_passed": 15, "plus_total": 30}), 0.5)
 
-    def test_registered_panel_is_inside_the_replayed_panel(self) -> None:
+    def test_registered_panel_is_inside_the_teacher_forced_panel(self) -> None:
         self.assertLessEqual(set(REGISTERED), set(ALL_POLICIES))
 
 

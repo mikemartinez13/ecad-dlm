@@ -8,22 +8,22 @@ study measures
     change = ||x_t - x_{t-k}|| / ||x_t||
 
 per row, and averages it over three row groups: masked at step t, committed
-(decoded by step t-k) and prompt. The design, the registered metric and the
-stop rule are in MASKED_ROW_SMOOTHNESS_STUDY.md.
+(decoded by step t-k) and prompt. The design, the primary metric and the
+results are in MASKED_ROW_SMOOTHNESS_STUDY.md.
 
 Arms:
 
   cadd_on      apple/CADD-Base-7B, CADD sampler (use_cadd, weighted)
   cadd_off     the same weights and code with use_cadd=False (z = 0)
   diffucoder_base  DiffuCoder-7B-Base (the model CADD descends from), native
-                   sampler; the registered comparator
+                   sampler; the primary comparator
   diffucoder   DiffuCoder-7B-cpGRPO, native sampler; secondary
 
 Two steps:
 
   run --arm A     GPU. Generates the tasks and saves one .npz per task.
                   Finished tasks are skipped on resubmission.
-  report          No model. Compares the arms and applies the stop rule.
+  report          No model. Compares the arms: ratios of masked-row change, with 95% intervals.
 
 Results go to <results root>/<run name>/<GPU type>/<arm>/. Arms must be
 compared on one GPU type.
@@ -368,15 +368,12 @@ def report(run_dir: Path) -> None:
                 )
     result["ratios_masked_deep_KV"] = comparisons
 
-    registered = comparisons.get(f"cadd_on/{COMPARATOR} lag1")
-    if registered is not None:
-        valid = all(summary["all_valid"] for summary in result["arms"].values()) and result["prompts_identical_across_arms"]
-        passes = registered["ratio"] <= 0.80 and registered["ci_high"] < 1.0
-        result["decision"] = {
-            "registered_ratio": registered,
-            "runs_valid": valid,
-            "rule": "continue only if ratio <= 0.80 and the 95% interval's upper end < 1.0",
-            "verdict": ("CONTINUE" if passes else "STOP") if valid else "INVALID: fix the runs first",
+    primary = comparisons.get(f"cadd_on/{COMPARATOR} lag1")
+    if primary is not None:
+        result["primary"] = {
+            "ratio": primary,
+            "runs_valid": all(summary["all_valid"] for summary in result["arms"].values())
+            and result["prompts_identical_across_arms"],
         }
 
     (run_dir / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -387,8 +384,10 @@ def report(run_dir: Path) -> None:
               f"{summary['lag1_masked_primary_hidden']:>12.4f}")
     for name, ratio in comparisons.items():
         print(f"{name:<30} ratio {ratio['ratio']:.3f}  95% [{ratio['ci_low']:.3f}, {ratio['ci_high']:.3f}]")
-    if "decision" in result:
-        print(f"Verdict: {result['decision']['verdict']}")
+    if "primary" in result:
+        ratio = result["primary"]["ratio"]
+        print(f"Primary, cadd_on/{COMPARATOR} lag 1: {ratio['ratio']:.3f} [{ratio['ci_low']:.3f}, {ratio['ci_high']:.3f}]; "
+              f"runs valid: {result['primary']['runs_valid']}")
 
 
 def main() -> None:

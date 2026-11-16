@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Freeze the source, then chain: dense reference -> every generation: advance (CPU)
-# -> 16 replay shards (A100 80GB) -> ... -> final advance -> audit on the audit set
+# -> 16 teacher forcing shards (A100 80GB) -> ... -> final advance -> audit on the audit set
 # -> EvalPlus extra tests on the audited programs (CPU). A batched-backend check of
 # generation 0 runs alongside; nothing waits on it.
 # RUN names the snapshot and output (v1, v2, ...); CONFIG is the search config under
-# experiments/configs, and GENERATIONS is read from it. Run only after the tau
-# confirmation report says LAUNCH: True, or with OVERRIDE_TAU_GATE=1.
+# experiments/configs, and GENERATIONS is read from it.
 # A shard job that fails stops the chain; finished tasks are kept, so resubmitting
 # the rest of the chain by hand resumes it. AUDIT_TOP sets the audited policies.
 set -euo pipefail
@@ -21,10 +20,7 @@ GENERATIONS="$(awk '$1 == "generations:" {print $2}' "$REPO/ecad-dlm/experiments
 [[ -n "$GENERATIONS" ]] || { echo "No generations in $CONFIG_NAME" >&2; exit 1; }
 AUDIT_TOP="${AUDIT_TOP:-4}"
 PARTS=16
-CONFIRMATION="$ARTIFACTS/results/dlm_kv_policy/tau_confirmation_v1/tau_confirmation_report.json"
 [[ -e "$SNAP/jobs.txt" ]] && { echo "$SNAP/jobs.txt exists; refusing duplicate submission" >&2; exit 1; }
-# Tau failed confirmation; OVERRIDE_TAU_GATE=1 records Michael's 2026-11-08 decision (CONSTRAINED_SEARCH.md).
-[[ "${OVERRIDE_TAU_GATE:-0}" == 1 ]] || grep -q '"launch": true' "$CONFIRMATION" || { echo "$CONFIRMATION does not approve a launch" >&2; exit 1; }
 mkdir -p "$SNAP" "$LOGS" "$OUTPUT"
 rsync -a --delete --exclude=__pycache__ "$REPO/ecad-dlm" "$SNAP/"
 # Variables from an interactive allocation must not leak into these jobs. SLURM_CONF

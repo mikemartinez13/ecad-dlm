@@ -1,10 +1,10 @@
 # E2 + E3 + proxy validation, all under greedy decoding (temperature 0).
 # dense_repeat checks determinism; dense_math_attention measures the rounding
 # noise floor. The 15 cached policies range from harmless to clearly broken.
-# Each gets an end-to-end run with tests here and a forced-trajectory replay,
+# Each gets an end-to-end run with tests here and a teacher-forced pass,
 # and ecad-dlm/experiments/PROXY_VALIDATION.md compares the two.
 #   python -m experiments.output_variance_study --config <this file>
-#   python -m dlm_kv_policy.forced_trajectory_replay --config <this file>
+#   python -m dlm_kv_policy.teacher_forcing --config <this file>
 #   python -m dlm_kv_policy.validate_proxy --config <this file> --gpu-folder <GPU folder>
 run:
   name: diffucoder7b_output_variance_greedy_v1

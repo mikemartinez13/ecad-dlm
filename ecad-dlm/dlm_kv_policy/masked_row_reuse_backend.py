@@ -1,4 +1,4 @@
-"""Active-token backend for MaskedRowReusePolicy, shared by replay and generation."""
+"""Active-token backend for MaskedRowReusePolicy, shared by teacher forcing and generation."""
 
 from __future__ import annotations
 

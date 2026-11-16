@@ -3,8 +3,8 @@
 # change as many tasks as a cache policy does (about 43 of 64), then a cache
 # policy at this temperature is indistinguishable from reseeding.
 #   python -m experiments.output_variance_study --config <this file>
-# The same file drives E4 replay at temperature 0.4:
-#   python -m dlm_kv_policy.forced_trajectory_replay --config <this file> \
+# The same file drives E4 teacher forcing at temperature 0.4:
+#   python -m dlm_kv_policy.teacher_forcing --config <this file> \
 #     --policies full_refresh_every_step,dkv_reference,depth_22,delay_0
 run:
   name: diffucoder7b_output_variance_sampling_t04_v1

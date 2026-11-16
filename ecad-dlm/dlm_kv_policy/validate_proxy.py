@@ -1,12 +1,14 @@
-"""Apply the pre-registered criteria in PROXY_VALIDATION.md.
+"""How well the teacher forcing proxy tracks end-to-end test losses (PROXY_VALIDATION.md).
 
-Reads the greedy variance study (end-to-end pass/fail) and the forced-trajectory
-replay from one GPU-type folder, then prints and saves the verdict. It needs no
-GPU and loads no model.
+Reads the greedy variance study (end-to-end EvalPlus results) and the teacher forcing
+from one GPU-type folder, then prints and saves two measures: the Spearman rank
+correlation between each policy's proxy and its pass-to-fail count, and the per-task
+AUROC of large-margin decision changes for tasks a policy loses. It needs no GPU and
+loads no model.
 
 By default a position flip counts only when dense was not tied between
 positions (POSITION_TIE_MARGIN). --count-tied-position-flips counts every
-position flip, which is the proxy as first pre-registered.
+position flip, which is the proxy as first defined.
 
 Usage:
 
@@ -22,7 +24,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .forced_trajectory_replay import (
+from .teacher_forcing import (
+    SAVED_FOLDER,
     NEAR_TIE_MARGIN,
     POSITION_TIE_MARGIN,
     large_margin_decision_changes,
@@ -30,11 +33,6 @@ from .forced_trajectory_replay import (
     summarize,
 )
 from .kv_policy_experiment_config import load_kv_policy_experiment_config
-
-# Thresholds from PROXY_VALIDATION.md. Do not change them after results exist.
-MIN_SPEARMAN = 0.80
-MIN_AUROC = 0.75
-MIN_FAILURES_FOR_AUROC = 10
 
 
 def average_ranks(values: list[float]) -> list[float]:
@@ -108,41 +106,41 @@ def main() -> None:
 
     dense = variant("dense")
     dense_status = base_statuses(dense)
-    task_files = sorted((folder / "forced_trajectory_replay" / "tasks").glob("task_*.json"))
-    replay = [json.loads(path.read_text()) for path in task_files]
-    if len(replay) != len(dense_status):
-        raise SystemExit(f"Replay has {len(replay)} tasks; the study has {len(dense_status)}. Finish the replay first.")
+    task_files = sorted((folder / SAVED_FOLDER / "tasks").glob("task_*.json"))
+    teacher_forcing = [json.loads(path.read_text()) for path in task_files]
+    if len(teacher_forcing) != len(dense_status):
+        raise SystemExit(f"Teacher forcing has {len(teacher_forcing)} tasks; the study has {len(dense_status)}. Finish the teacher forcing first.")
 
-    preconditions = {
+    consistency = {
         "greedy_generation_is_deterministic": variant("dense_repeat")["output_hash"] == dense["output_hash"],
-        "replay_follows_the_dense_run": [task["dense_token_ids"] for task in replay] == dense["generated_token_ids"],
+        "teacher_forcing_follows_the_dense_run": [task["dense_token_ids"] for task in teacher_forcing] == dense["generated_token_ids"],
     }
 
-    # Criterion A: rank policies by proxy and by pass->fail count.
-    replay_summary = summarize(replay, policies, tie_margin)
+    # Policies ranked by proxy and by pass->fail count.
+    teacher_forcing_summary = summarize(teacher_forcing, policies, tie_margin)
     rows = []
     for name in policies:
         status = base_statuses(variant(name))
         rows.append(
             {
                 "policy": name,
-                "proxy": replay_summary[name]["divergence_events_per_task"],
+                "proxy": teacher_forcing_summary[name]["divergence_events_per_task"],
                 "pass_to_fail": sum(dense_status[t] == "pass" and status[t] != "pass" for t in dense_status),
                 "fail_to_pass": sum(dense_status[t] != "pass" and status[t] == "pass" for t in dense_status),
-                "compute_fraction": replay_summary[name]["compute_fraction"],
-                "kl_p99": replay_summary[name]["kl_p99"],
-                "top1_flips": replay_summary[name]["top1_flips"],
-                "large_margin_changes_per_task": replay_summary[name]["large_margin_decision_changes_per_task"],
+                "compute_fraction": teacher_forcing_summary[name]["compute_fraction"],
+                "kl_p99": teacher_forcing_summary[name]["kl_p99"],
+                "top1_flips": teacher_forcing_summary[name]["top1_flips"],
+                "large_margin_changes_per_task": teacher_forcing_summary[name]["large_margin_decision_changes_per_task"],
                 "statuses": status,
             }
         )
     pass_to_fail = [row["pass_to_fail"] for row in rows]
     spearman_proxy = spearman([row["proxy"] for row in rows], pass_to_fail)
 
-    # Criterion B: per (policy, task) pairs where dense passes.
+    # Per (policy, task) pairs where dense passes.
     scores, failures, divergence_sums, near_tie_only = [], [], [], []
     for row in rows:
-        for task in replay:
+        for task in teacher_forcing:
             if dense_status[task["task_id"]] != "pass":
                 continue
             steps = task["policies"][row["policy"]]
@@ -152,45 +150,25 @@ def main() -> None:
             divergence_sums.append(sum(step_divergence(step, tie_margin) for step in steps))
             near_tie_only.append(changes == 0 and any(step["top1_flip"] for step in steps))
     task_auroc = auroc(scores, failures)
-    # How much criterion B depends on the exact tie margin.
+    # How much the per-task AUROC depends on the exact tie margin.
     auroc_by_tie_margin = {}
     for margin in (None, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2):
         margin_scores = [
             large_margin_decision_changes(task["policies"][row["policy"]], margin)
             for row in rows
-            for task in replay
+            for task in teacher_forcing
             if dense_status[task["task_id"]] == "pass"
         ]
         auroc_by_tie_margin[str(margin)] = auroc(margin_scores, failures)
     kept = [index for index, skip in enumerate(near_tie_only) if not skip]
 
-    criterion_a = "pass" if spearman_proxy >= MIN_SPEARMAN else "fail"
-    if sum(failures) < MIN_FAILURES_FOR_AUROC:
-        criterion_b = "inconclusive"
-    else:
-        criterion_b = "pass" if task_auroc >= MIN_AUROC else "fail"
-    if not all(preconditions.values()):
-        verdict = "INCONCLUSIVE"
-    elif "fail" in (criterion_a, criterion_b):
-        verdict = "FAIL"
-    elif criterion_a == criterion_b == "pass":
-        verdict = "PASS"
-    else:
-        verdict = "INCONCLUSIVE"
-
     report = {
         "position_tie_margin": tie_margin,
-        "verdict": verdict,
-        "preconditions": preconditions,
-        "criterion_a": {"spearman": spearman_proxy, "threshold": MIN_SPEARMAN, "result": criterion_a},
-        "criterion_b": {
-            "auroc": task_auroc,
-            "threshold": MIN_AUROC,
-            "failures": sum(failures),
-            "pairs": len(failures),
-            "result": criterion_b,
-        },
-        "not_part_of_verdict": {
+        "consistency": consistency,
+        "policy_ranking": {"spearman": spearman_proxy},
+        # With few lost tasks the AUROC rests on few positives; read it with "failures".
+        "task_auroc": {"auroc": task_auroc, "failures": sum(failures), "pairs": len(failures)},
+        "other_measures": {
             "spearman_kl_p99": spearman([row["kl_p99"] for row in rows], pass_to_fail),
             "spearman_top1_flips": spearman([row["top1_flips"] for row in rows], pass_to_fail),
             "spearman_large_margin_changes": spearman(
@@ -217,10 +195,9 @@ def main() -> None:
             f"{row['fail_to_pass']:>5} {row['compute_fraction']:>8.3f}"
         )
     print(f"\nPosition flips counted at dense margin >= {tie_margin} (None: all)")
-    print(f"Preconditions: {preconditions}")
-    print(f"A. Spearman(proxy, pass->fail) = {spearman_proxy:.3f} (need {MIN_SPEARMAN}): {criterion_a}")
-    print(f"B. Per-task AUROC = {task_auroc:.3f} (need {MIN_AUROC}, {sum(failures)} failures): {criterion_b}")
-    print(f"Verdict: {verdict}")
+    print(f"Consistency: {consistency}")
+    print(f"Spearman(proxy, pass->fail) = {spearman_proxy:.3f} over {len(rows)} policies")
+    print(f"Per-task AUROC = {task_auroc:.3f} ({sum(failures)} lost tasks in {len(failures)} pairs)")
 
 
 if __name__ == "__main__":

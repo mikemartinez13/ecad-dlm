@@ -15,21 +15,21 @@ class PrerequisiteTests(unittest.TestCase):
         self.assertEqual(len(policies({0})),12)
         self.assertEqual(sum(n.startswith('depth_') and n!='depth_22' for n,*_ in PANEL),8)
 
-    def test_spearman_point_nine_and_auc_are_both_required(self):
+    def test_assessment_reports_rank_correlation_auroc_and_regressions(self):
         passes=np.ones((3,20),dtype=bool)
         passes[0,:2]=False;passes[1,:5]=False;passes[2,:9]=False
         proxy=np.repeat([[1.],[2.],[3.]],20,axis=1)
         task_proxy=(~passes).astype(float)
         result=assessment(proxy,task_proxy,passes,np.ones(20,dtype=bool),np.arange(20))
-        self.assertEqual(result['verdict'],'PASS')
+        self.assertAlmostEqual(result['spearman'],1.0);self.assertAlmostEqual(result['auroc'],1.0)
         reverse=assessment(proxy[::-1],task_proxy,passes,np.ones(20,dtype=bool),np.arange(20))
-        self.assertEqual(reverse['verdict'],'FAIL')
+        self.assertAlmostEqual(reverse['spearman'],-1.0)
         self.assertEqual(reverse['regressions'],16)
+        self.assertNotIn('verdict',result)
 
-    def test_ties_and_small_samples_are_inconclusive(self):
+    def test_undefined_measures_are_none(self):
         x=np.zeros((3,8));passes=np.ones((3,8),dtype=bool)
         r=assessment(x,x,passes,np.ones(8,dtype=bool),np.arange(8))
-        self.assertEqual(r['verdict'],'INCONCLUSIVE')
         self.assertIsNone(r['spearman']);self.assertIsNone(r['auroc'])
 
     def test_batch_maxima_are_taken_separately_per_block(self):
@@ -42,9 +42,10 @@ class PrerequisiteTests(unittest.TestCase):
         with self.assertRaises(ValueError):predict_step(table,8,999,22,[40],[90],128)
         with self.assertRaises(ValueError):interpolate({'0':0.,'10':1.},11)
 
-    def test_cost_gate_is_permutation_sensitive(self):
-        self.assertTrue(calibration_metrics([1,2,3,4],[1,2,3,4])['passed'])
-        self.assertFalse(calibration_metrics([4,3,2,1],[1,2,3,4])['passed'])
+    def test_calibration_metrics_are_permutation_sensitive(self):
+        self.assertAlmostEqual(calibration_metrics([1,2,3,4],[1,2,3,4])['spearman'],1.0)
+        self.assertEqual(calibration_metrics([1,2,3,4],[1,2,3,4])['median_absolute_relative_error'],0.0)
+        self.assertAlmostEqual(calibration_metrics([4,3,2,1],[1,2,3,4])['spearman'],-1.0)
 
     def test_synthetic_backend_decisions_and_cache_are_valid(self):
         model=FakeModel().eval()

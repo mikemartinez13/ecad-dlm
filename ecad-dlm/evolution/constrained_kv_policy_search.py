@@ -1,26 +1,39 @@
-"""NSGA-II over cache policies under a fidelity constraint, minimizing predicted batched time.
+"""NSGA-II over cache policies under a fidelity constraint, minimizing compute cost.
 
 Fidelity is a bound, not an objective (EAR_VALIDITY_STUDY.md): every policy meeting
 it counts as equally faithful, and Deb's constrained domination then ranks policies
-on predicted time alone. A policy is feasible if the 95% lower bound of its mean EAR,
-its tail EAR and its live answer coverage all reach the thresholds in the config.
-Infeasible ones rank by total shortfall, so the search can still climb toward the
-feasible region. Predicted time is the cost model's model-compute estimate, which
-failed its absolute calibration; only its ranking is relied on.
+on cost alone. A policy is feasible if the 95% lower bound of its mean EAR, its tail
+EAR and its live answer coverage all reach the thresholds in the config. Infeasible
+ones rank by total shortfall, so the search can still climb toward the feasible region.
 
-A generation is one sharded replay of every genome over the tasks:
+Cost is ``evolution.cost_objective``. The default, "flops", is the policy's FLOPs over
+dense FLOPs, counted during teacher forcing from the rows each forward computes, as ECAD
+counts TMACs: no timing table and no GPU dependence. On the batched backend it ranks
+measured batch-8 speed of the 21-policy panel at Spearman 0.995, but its speedup reads
+about 16% high (experiments/cost_model_panel.py). "padded_flops" charges every request
+its padded batch's largest row count per layer, in batches of ``objective_batch_size``
+tasks sorted by prompt length, which is what the batched backend computes: run 3's audit
+ranked measured batch-8 speed at Spearman 0.83 with it, against 0.52 with "flops"
+(CONSTRAINED_SEARCH.md). "predicted_seconds" is the timed lookup table that runs v1 and v2
+used. A run continued from summaries scored under another objective is re-costed when
+the summaries keep that cost.
+
+A generation is one sharded teacher forcing of every genome over the tasks:
 
   advance    CPU. Writes generation 0's genomes, or scores the finished generation,
              selects survivors and writes the next genomes. Safe to rerun.
-  dense      GPU, A100 80GB. Generates dense once, for the answer lengths replay needs.
-  evaluate   GPU, A100 80GB. Replays one shard of the current generation.
+  dense      GPU, A100 80GB. Generates dense once, for the answer lengths teacher forcing needs,
+             and, with batched teacher forcing, records each task's dense trajectory.
+  evaluate   GPU, A100 80GB. Teacher-forces one shard of the current generation. With
+             evolution.teacher_forcing_batch_size above 1, B tasks per forward, along the
+             recorded trajectories, with vectorized scoring (BATCHED_TEACHER_FORCING_CHECK.md).
   check      GPU, A100 80GB. Whether each genome of a generation decodes token for
              token the same in the batched backend, at batch one, on one task.
-             Predicted time assumes that backend can run these policies.
+             Measured speed assumes that backend can run these policies.
   audit      GPU, A100 80GB, on the audit set. Free-running pass@1 against dense and
              measured batch-8 time, for the fastest feasible policies, the fastest
              feasible seed, and the policies using genes EAR was not validated on.
-             Applies the success criterion in CONSTRAINED_SEARCH.md.
+             Reports measured speedups and net test losses side by side.
   plus       No model. Reruns the audited programs under EvalPlus's full scope, base
              plus extra tests, and compares each policy with dense.
 """
@@ -28,7 +41,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -36,11 +51,12 @@ import torch
 
 from dlm_kv_policy.dense_diffucoder_baseline import DenseDiffuCoderBaseline
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-from dlm_kv_policy.forced_trajectory_replay import load_top_p_logits, replay_task
+from dlm_kv_policy.teacher_forcing import SAVED_KEY, load_top_p_logits, teacher_force_task
 from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_config
-from experiments.batched_cost_model import predicted_seconds
 from experiments.ear_validity import TAIL_QUANTILE, answer_length, pass_fraction, task_metrics
-from experiments.proxy_recheck import assert_same, backend, generation_settings, save
+from experiments.proxy_recheck import assert_same, backend, generation_settings
+from utils.compute_cost import ModelShape, padded_batch_flops
+from utils.results_io import save
 
 from .nsga2_kv_policy_search import (
     SEED_GENOMES,
@@ -54,10 +70,6 @@ from .nsga2_kv_policy_search import (
 GPU = "NVIDIA A100-SXM4-80GB"
 SEED = 20261107
 BOOTSTRAPS = 2000
-AUDIT_NET_LOSS_MARGIN = 2
-# Success criterion: measured batch-8 speedup over batched dense, and over the best seed.
-MIN_SPEEDUP_OVER_DENSE = 2.0
-MIN_SPEEDUP_OVER_SEED = 1.10
 
 
 def generation_dir(output: Path, generation: int) -> Path:
@@ -84,6 +96,8 @@ def dense_reference(config_path: Path) -> None:
         raise RuntimeError(f"Search requires {GPU}")
     sampler = DiffuCoderDenoisingSampler(DenseDiffuCoderBaseline(evaluator.model))
     settings = generation_settings(config)
+    if config.evolution.teacher_forcing_batch_size > 1:
+        record_trajectories(config, evaluator, sampler)
     for index, task in enumerate(evaluator.tasks):
         path = Path(config.evolution.dense_reference) / "tasks" / f"task_{index:03d}.json"
         if path.exists():
@@ -91,8 +105,78 @@ def dense_reference(config_path: Path) -> None:
         seed_everything(config.generation.seed + index)
         prompt, mask = prepare_diffucoder_prompt_batch(evaluator.tokenizer, [task.prompt], config.model.device)
         result = sampler.generate(prompt, attention_mask=mask, **settings)
-        save(path, {"task_id": task.task_id, "replay": {"dense_token_ids": result.sequences[0, prompt.shape[1]:].cpu().tolist()}})
+        save(path, {"task_id": task.task_id, SAVED_KEY: {"dense_token_ids": result.sequences[0, prompt.shape[1]:].cpu().tolist()}})
         print(f"dense {index} {task.task_id}", flush=True)
+
+
+def record_trajectories(config: Any, evaluator: Any, sampler: Any) -> None:
+    """Each task's dense commit steps at batch one, which batched teacher forcing follows."""
+
+    from dlm_kv_policy.batched_teacher_forcing import record_trajectory
+    from dlm_kv_policy.code_correctness_and_latency_evaluator import seed_everything
+    from language_models.diffucoder_loader import prepare_diffucoder_prompt_batch
+
+    for index, task in enumerate(evaluator.tasks):
+        path = Path(config.evolution.dense_trajectories) / f"task_{index:03d}.json"
+        if path.exists():
+            continue
+        seed_everything(config.generation.seed + index)
+        prompt, mask = prepare_diffucoder_prompt_batch(evaluator.tokenizer, [task.prompt], config.model.device)
+        save(path, {"task_id": task.task_id, **record_trajectory(sampler, prompt, mask, config.generation)})
+        print(f"trajectory {index} {task.task_id}", flush=True)
+
+
+def evaluate_batched(config: Any, evaluator: Any, output: Path, generation: int, part: int, parts: int) -> None:
+    """``evaluate`` with B tasks per forward; the task records have the same format."""
+
+    from dlm_kv_policy.batched_diffucoder_backend import BatchedDiffuCoderKVBackend
+    from dlm_kv_policy.batched_teacher_forcing import teacher_force_batch
+    from dlm_kv_policy.dense_diffucoder_baseline import BatchedDenseDiffuCoderBaseline
+    from language_models.diffucoder_loader import prepare_diffucoder_prompt_batch
+
+    model, tokenizer = evaluator.model, evaluator.tokenizer
+    stops = stop_ids(tokenizer)
+    directory = generation_dir(output, generation)
+    genomes = read_genomes(directory)
+    top_p_logits = load_top_p_logits(model)
+    reference = Path(config.evolution.dense_reference) / "tasks"
+    trajectories = Path(config.evolution.dense_trajectories)
+    pending = [index for index in range(part, len(evaluator.tasks), parts)
+               if not (directory / "tasks" / f"task_{index:03d}.json").exists()]
+    loaded = {}
+    for index in pending:
+        task = evaluator.tasks[index]
+        trajectory = json.loads((trajectories / f"task_{index:03d}.json").read_text())
+        saved = json.loads((reference / f"task_{index:03d}.json").read_text())
+        if not trajectory["task_id"] == saved["task_id"] == task.task_id:
+            raise RuntimeError(f"Task {index} is not the dense reference's task")
+        if trajectory["dense_token_ids"] != saved[SAVED_KEY]["dense_token_ids"]:
+            raise RuntimeError(f"Task {index}: the trajectory's dense tokens differ from the dense reference")
+        prompt, _ = prepare_diffucoder_prompt_batch(tokenizer, [task.prompt], "cpu")
+        loaded[index] = (trajectory, prompt.shape[1])
+    # Similar prompt lengths share a batch, so little of each forward is padding.
+    order = sorted(pending, key=lambda index: (loaded[index][1], index))
+    size = config.evolution.teacher_forcing_batch_size
+    for batch in (order[start:start + size] for start in range(0, len(order), size)):
+        tasks = [evaluator.tasks[index] for index in batch]
+        prompts, mask = prepare_diffucoder_prompt_batch(tokenizer, [task.prompt for task in tasks], config.model.device)
+        answer_ends = [answer_length(loaded[index][0]["dense_token_ids"], stops) for index in batch]
+        backends = {genome.name: BatchedDiffuCoderKVBackend(model, genome.policy(stops)) for genome in genomes}
+        results = teacher_force_batch(model, BatchedDenseDiffuCoderBaseline(model), backends, prompts, mask,
+                                      [loaded[index][0] for index in batch], config.generation, top_p_logits,
+                                      answer_ends=answer_ends)
+        for index, task, answer_end, result in zip(batch, tasks, answer_ends, results):
+            policies = {}
+            for name, steps in result["policies"].items():
+                outside = sum(position < answer_end for row in steps for position in row.get("outside_positions", []))
+                policies[name] = {**task_metrics(steps, answer_end), "answer_outside": outside,
+                                  "rows": result["rows"][name], "flops": result["flops"][name]}
+            save(directory / "tasks" / f"task_{index:03d}.json",
+                 {"task_id": task.task_id, "index": index, "prompt_tokens": loaded[index][1], "answer_end": answer_end,
+                  "dense_flops": result["dense_flops"], "teacher_forcing_batch_size": len(batch), "policies": policies})
+        print(f"generation {generation} part {part}: tasks {batch} complete", flush=True)
+        del backends, results
+        torch.cuda.empty_cache()
 
 
 def evaluate(config_path: Path, output: Path, generation: int, part: int, parts: int) -> None:
@@ -104,6 +188,9 @@ def evaluate(config_path: Path, output: Path, generation: int, part: int, parts:
     model, tokenizer = evaluator.model, evaluator.tokenizer
     if torch.cuda.get_device_name() != GPU:
         raise RuntimeError(f"Search requires {GPU}: thresholds and costs were measured there")
+    if config.evolution.teacher_forcing_batch_size > 1:
+        evaluate_batched(config, evaluator, output, generation, part, parts)
+        return
     stops = stop_ids(tokenizer)
     directory = generation_dir(output, generation)
     genomes = read_genomes(directory)
@@ -118,7 +205,7 @@ def evaluate(config_path: Path, output: Path, generation: int, part: int, parts:
         saved = json.loads((reference / "tasks" / f"task_{index:03d}.json").read_text())
         if saved["task_id"] != task.task_id:
             raise RuntimeError(f"Task {index} is not the dense reference's task")
-        dense_ids = saved["replay"]["dense_token_ids"]
+        dense_ids = saved[SAVED_KEY]["dense_token_ids"]
         answer_end = answer_length(dense_ids, stops)
         seed_everything(config.generation.seed + index)
         prompt, mask = prepare_diffucoder_prompt_batch(tokenizer, [task.prompt], config.model.device)
@@ -135,17 +222,17 @@ def evaluate(config_path: Path, output: Path, generation: int, part: int, parts:
                 return result
 
             instance.forward_mask_logits = record
-        replay = replay_task(model, sampler, backends, prompt, mask, config.generation, top_p_logits,
+        teacher_forcing = teacher_force_task(model, sampler, backends, prompt, mask, config.generation, top_p_logits,
                              answer_end=answer_end)
-        if replay["dense_token_ids"] != dense_ids:
+        if teacher_forcing["dense_token_ids"] != dense_ids:
             raise RuntimeError(f"Task {index}: dense differs from the dense reference")
         policies = {}
-        for name, steps in replay["policies"].items():
+        for name, steps in teacher_forcing["policies"].items():
             outside = sum(position < answer_end for row in steps for position in row.get("outside_positions", []))
             policies[name] = {**task_metrics(steps, answer_end), "answer_outside": outside, "rows": rows[name],
-                              "flops": replay["flops"][name]}
+                              "flops": teacher_forcing["flops"][name]}
         save(path, {"task_id": task.task_id, "index": index, "prompt_tokens": prompt.shape[1], "answer_end": answer_end,
-                    "dense_flops": replay["dense_flops"], "policies": policies})
+                    "dense_flops": teacher_forcing["dense_flops"], "policies": policies})
         print(f"generation {generation} part {part}: {index} {task.task_id} complete", flush=True)
 
 
@@ -172,7 +259,24 @@ def check(config_path: Path, output: Path, generation: int) -> None:
     save(generation_dir(output, generation) / "batched_check.json", results)
 
 
-def score(genome: KVRefreshPolicyGenome, records: list[dict[str, Any]], settings: Any, table: dict[str, Any]) -> EvaluatedKVPolicy:
+def cost_of(item: EvaluatedKVPolicy, settings: Any) -> float:
+    """The constrained search's one objective for an evaluated policy, under the config's cost."""
+
+    if settings.cost_objective == "flops":
+        return item.compute_fraction
+    if settings.cost_objective == "padded_flops":
+        if "padded_compute_fraction" not in item.constraints:
+            raise ValueError(f"{item.genome.name} has no padded FLOPs; it was scored before padded_flops existed")
+        return item.constraints["padded_compute_fraction"]
+    if item.predicted_seconds is None:
+        raise ValueError(f"{item.genome.name} has no predicted time; it was scored with cost_objective flops")
+    return item.predicted_seconds
+
+
+def score(genome: KVRefreshPolicyGenome, records: list[dict[str, Any]], settings: Any,
+          table: dict[str, Any] | None = None, shape: Any = None, generation: Any = None) -> EvaluatedKVPolicy:
+    """``shape`` (ModelShape) and ``generation`` (steps, gen_length) add padded FLOPs."""
+
     name = genome.name
     ear = np.array([record["policies"][name]["ear"] for record in records])
     samples = np.random.default_rng(SEED).integers(0, len(ear), size=(BOOTSTRAPS, len(ear)))
@@ -184,16 +288,35 @@ def score(genome: KVRefreshPolicyGenome, records: list[dict[str, Any]], settings
                  + max(0.0, settings.min_answer_coverage - coverage))
     tasks = [{"task_id": record["task_id"], "prompt_tokens": record["prompt_tokens"], "rows": record["policies"][name]["rows"]}
              for record in records]
-    seconds, dense_seconds = predicted_seconds(table, tasks, settings.objective_batch_size, genome.refresh_depth)
     compute = sum(record["policies"][name]["flops"] for record in records) / sum(record["dense_flops"] for record in records)
-    return EvaluatedKVPolicy(
+    seconds = None
+    predicted_speedup = 1 / compute  # FLOP speedup; reads about 16% above measured batch-8 speed
+    padded: dict[str, float] = {}
+    if shape is not None:
+        policy, dense = padded_batch_flops(shape, tasks, settings.objective_batch_size, genome.refresh_depth,
+                                           generation.steps, generation.gen_length)
+        padded = {"padded_compute_fraction": policy / dense, "flops_speedup": 1 / compute}
+        if settings.cost_objective == "padded_flops":
+            predicted_speedup = dense / policy
+    elif settings.cost_objective == "padded_flops":
+        raise ValueError("cost_objective padded_flops needs the model shape")
+    if settings.cost_objective == "predicted_seconds":
+        from experiments.batched_cost_model import predicted_seconds
+
+        if table is None:
+            raise ValueError("cost_objective predicted_seconds needs the cost table")
+        seconds, dense_seconds = predicted_seconds(table, tasks, settings.objective_batch_size, genome.refresh_depth)
+        predicted_speedup = dense_seconds / seconds
+    item = EvaluatedKVPolicy(
         genome=genome, quality_loss=1 - float(np.nanmean(ear)), compute_fraction=compute, predicted_seconds=seconds,
         violation=violation,
         constraints={"ear": float(np.nanmean(ear)), "ear_lower_95": ear_lower, "tail_ear": tail_ear,
-                     "answer_coverage": coverage, "predicted_speedup": dense_seconds / seconds,
+                     "answer_coverage": coverage, "predicted_speedup": predicted_speedup,
+                     "cost_objective": settings.cost_objective, **padded,
                      "position_flip_rate": float(np.nanmean([record["policies"][name]["position_flip_rate"] for record in records])),
                      "masked_ear": float(np.nanmean([record["policies"][name]["masked_ear"] for record in records]))},
     )
+    return replace(item, cost=cost_of(item, settings))
 
 
 def advance(config_path: Path, output: Path) -> None:
@@ -213,18 +336,22 @@ def advance(config_path: Path, output: Path) -> None:
     records = [json.loads(path.read_text()) for path in sorted((directory / "tasks").glob("task_*.json"))]
     if len(records) != config.evaluation.max_prompts:
         raise SystemExit(f"Generation {generation}: {len(records)} of {config.evaluation.max_prompts} tasks finished")
-    table = json.loads(Path(settings.cost_table).read_text())
-    evaluated = [score(genome, records, settings, table) for genome in read_genomes(directory)]
+    table = json.loads(Path(settings.cost_table).read_text()) if settings.cost_objective == "predicted_seconds" else None
+    padded = settings.cost_objective == "padded_flops"
+    shape = ModelShape.from_checkpoint(config.model.path) if padded else None
+    steps = config.generation if padded else None
+    evaluated = [score(genome, records, settings, table, shape, steps) for genome in read_genomes(directory)]
     population = evaluated
     seen = {item.genome for item in evaluated}
     if generation:
         previous = json.loads((generation_dir(output, generation - 1) / "summary.json").read_text())
-        population = environmental_selection([EvaluatedKVPolicy.from_dict(raw) for raw in previous["population"]] + evaluated,
-                                             settings.population_size)
+        survivors = [EvaluatedKVPolicy.from_dict(raw) for raw in previous["population"]]
+        survivors = [replace(item, cost=cost_of(item, settings)) for item in survivors]
+        population = environmental_selection(survivors + evaluated, settings.population_size)
         seen |= {KVRefreshPolicyGenome.from_dict(raw) for raw in previous["seen"]}
-    feasible = sorted((item for item in population if not item.violation), key=lambda item: item.predicted_seconds)
+    feasible = sorted((item for item in population if not item.violation), key=lambda item: item.cost)
     save(directory / "summary.json", {
-        "generation": generation, "evaluated": [item.to_dict() for item in evaluated],
+        "generation": generation, "cost_objective": settings.cost_objective, "evaluated": [item.to_dict() for item in evaluated],
         "population": [item.to_dict() for item in population], "feasible": len(feasible),
         "seen": [genome.to_dict() for genome in sorted(seen, key=lambda item: item.name)],
     })
@@ -243,10 +370,11 @@ def outside_validation(genome: KVRefreshPolicyGenome) -> bool:
 
 
 def audit_choices(evaluated: list[EvaluatedKVPolicy], top: int, start: frozenset = frozenset()) -> list[EvaluatedKVPolicy]:
+    # ``cost`` must be set by the caller (cost_of), so every policy is ranked on one objective.
     """The fastest feasible policies that use unvalidated genes, plus the fastest overall, the fastest seed and
     the fastest of the starting population, which is the previous run's best when a run continues another."""
 
-    feasible = sorted((item for item in evaluated if not item.violation), key=lambda item: item.predicted_seconds)
+    feasible = sorted((item for item in evaluated if not item.violation), key=lambda item: item.cost)
     chosen = [item for item in feasible if outside_validation(item.genome)][:top]
     seeds = [item for item in feasible if item.genome in SEED_GENOMES]
     first = [item for item in feasible if item.genome in start]
@@ -256,15 +384,18 @@ def audit_choices(evaluated: list[EvaluatedKVPolicy], top: int, start: frozenset
     return chosen
 
 
-def success(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Apply the criterion to audited policies: faithful, 2x over dense, and 10% over the best seed."""
+def speedup_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Audited searched policies by measured speedup, each with its net loss and its speed over the fastest audited seed."""
 
-    faithful = [row for row in rows if row["within_margin"]]
-    seeds = [row["measured_speedup"] for row in faithful if row["seed"]]
-    best_seed = max(seeds, default=None)
-    winners = [row["policy"] for row in faithful if not row["seed"] and row["measured_speedup"] >= MIN_SPEEDUP_OVER_DENSE
-               and (best_seed is None or row["measured_speedup"] >= MIN_SPEEDUP_OVER_SEED * best_seed)]
-    return {"success": bool(winners), "winners": winners, "best_faithful_seed_speedup": best_seed}
+    seeds = sorted((row for row in rows if row["seed"]), key=lambda row: -row["measured_speedup"])
+    fastest_seed = seeds[0] if seeds else None
+    searched = sorted((row for row in rows if not row["seed"]), key=lambda row: -row["measured_speedup"])
+    return {
+        "fastest_seed": fastest_seed and {key: fastest_seed[key] for key in ("policy", "measured_speedup", "net_loss")},
+        "searched": [{"policy": row["policy"], "measured_speedup": row["measured_speedup"], "net_loss": row["net_loss"],
+                      "over_fastest_seed": row["measured_speedup"] / fastest_seed["measured_speedup"] if fastest_seed else None}
+                     for row in searched],
+    }
 
 
 def audit(config_path: Path, output: Path, top: int) -> None:
@@ -276,9 +407,12 @@ def audit(config_path: Path, output: Path, top: int) -> None:
     config = load_kv_policy_experiment_config(config_path)
     evaluated: dict[KVRefreshPolicyGenome, EvaluatedKVPolicy] = {}
     for path in sorted(output.glob("generation_*/summary.json")):
-        for raw in json.loads(path.read_text())["evaluated"]:
+        summary = json.loads(path.read_text())
+        # The audit config has no evolution section; the search's cost is in each summary.
+        settings = SimpleNamespace(cost_objective=summary["cost_objective"])
+        for raw in summary["evaluated"]:
             item = EvaluatedKVPolicy.from_dict(raw)
-            evaluated[item.genome] = item
+            evaluated[item.genome] = replace(item, cost=cost_of(item, settings))
     start = frozenset(read_genomes(generation_dir(output, 0)))
     chosen = audit_choices(list(evaluated.values()), top, start)
     if not chosen:
@@ -310,14 +444,14 @@ def audit(config_path: Path, output: Path, top: int) -> None:
         rows.append({"policy": item.genome.name, "genome": item.genome.to_dict(), "outside_validation": outside_validation(item.genome),
                      "seed": item.genome in SEED_GENOMES, "start": item.genome in start, "measured_speedup": measured,
                      "predicted_speedup": item.constraints["predicted_speedup"], "ear": item.constraints["ear"],
-                     "compute_fraction": record["compute_fraction"], "net_loss": net, "within_margin": net <= AUDIT_NET_LOSS_MARGIN,
+                     "compute_fraction": record["compute_fraction"], "net_loss": net,
                      **{key: result[key] for key in ("pass_at_1", "pass_to_fail", "fail_to_pass", "tasks_with_changed_code")}})
         save(output / "audit" / "audit.json", {"dense_pass_at_1": dense["code_execution"]["aggregate"]["base_pass_at_1"],
-                                               "policies": rows, "criterion": success(rows)})
+                                               "policies": rows, "speedups": speedup_summary(rows)})
     for row in rows:
         print(f"{row['policy']}: predicted {row['predicted_speedup']:.2f}x, measured {row['measured_speedup']:.2f}x, "
-              f"pass@1 {row['pass_at_1']:.3f}, net loss {row['net_loss']}, {'within' if row['within_margin'] else 'OUTSIDE'} margin", flush=True)
-    print("Success criterion:", success(rows), flush=True)
+              f"pass@1 {row['pass_at_1']:.3f}, net loss {row['net_loss']}", flush=True)
+    print("Speedups:", json.dumps(speedup_summary(rows), indent=2), flush=True)
 
 
 def plus_tests(config_path: Path, output: Path) -> None:

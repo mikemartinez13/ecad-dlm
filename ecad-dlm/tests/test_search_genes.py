@@ -26,11 +26,12 @@ from evolution.nsga2_kv_policy_search import (
     offspring_population,
 )
 from experiments.batched_cost_model import predicted_seconds
+from utils.compute_cost import ModelShape, dense_forward_flops, layer_flops, lm_head_flops, padded_batch_flops
 from experiments.task_sets import deal
-from experiments.tau_confirmation import decide as tau_decide, feasibility, ranking
+from experiments.tau_confirmation import disagreements, feasibility, ranking
 from test_backend_cpu import FakeModel
 from test_batched_backend import generate
-from test_replay_compounding import greedy_sample_tokens
+from test_teacher_forcing_compounding import greedy_sample_tokens
 
 # The sampler looks up sample_tokens in the module that defines the model class.
 sample_tokens = greedy_sample_tokens
@@ -234,12 +235,12 @@ def settings(**kwargs):
                   refresh_intervals=[8, 16], refresh_depths=[22, 24], terminal_refresh_steps=[0, 8], masked_windows=[1, 2, 4],
                   protected_sizes=[32, 64], protected_rules=["split", "split+recent"], prompt_refresh_intervals=[0, 32],
                   local_refresh_radii=[0, 2], padding_windows=[0, 8], entropy_thresholds=[0.0, 1.5], entropy_scopes=["local", "full"],
-                  cost_table="table.json", dense_reference="dense")
+                  cost_objective="predicted_seconds", cost_table="table.json", dense_reference="dense")
     return KVPolicyNSGA2SearchConfig(**{**values, **kwargs})
 
 
 def individual(genome=Genome(1, 8, 22, 0), seconds=10.0, violation=0.0):
-    return EvaluatedKVPolicy(genome=genome, quality_loss=0.0, compute_fraction=0.5, predicted_seconds=seconds,
+    return EvaluatedKVPolicy(genome=genome, quality_loss=0.0, compute_fraction=0.5, predicted_seconds=seconds, cost=seconds,
                              violation=violation, constraints={"predicted_speedup": 2.0, "ear": 0.99})
 
 
@@ -306,6 +307,32 @@ class ScoringTests(unittest.TestCase):
         item = search.score(genome, uncovered, settings(objective_batch_size=2), table())
         self.assertAlmostEqual(item.violation, 0.99 - 0.96)
 
+    def test_flops_objective_needs_no_table(self) -> None:
+        genome = Genome(1, 8, 22, 0)
+        records = [task_record(i, name=genome.name) for i in range(4)]
+        item = search.score(genome, records, settings(cost_objective="flops", cost_table=None))
+        self.assertEqual(item.cost, 0.25)
+        self.assertEqual(item.objectives, (0.25,))
+        self.assertIsNone(item.predicted_seconds)
+        self.assertEqual(item.constraints["predicted_speedup"], 4.0)
+
+    def test_summaries_from_the_table_objective_are_recosted_by_flops(self) -> None:
+        old = EvaluatedKVPolicy.from_dict(individual(seconds=7.0).to_dict() | {"objectives": {
+            "quality_loss": 0.0, "compute_fraction": 0.4, "predicted_seconds": 7.0}})
+        self.assertEqual(old.objectives, (7.0,))  # written before ``cost`` existed
+        self.assertEqual(search.cost_of(old, settings(cost_objective="flops")), 0.4)
+        self.assertEqual(search.cost_of(old, settings()), 7.0)
+        flops_only = EvaluatedKVPolicy(Genome(1, 8, 22, 0), 0.0, 0.4, cost=0.4)
+        with self.assertRaises(ValueError):
+            search.cost_of(flops_only, settings())
+
+    def test_config_needs_a_table_only_for_predicted_seconds(self) -> None:
+        settings(cost_objective="flops", cost_table=None).validate()
+        with self.assertRaises(ValueError):
+            settings(cost_table=None).validate()
+        with self.assertRaises(ValueError):
+            settings(cost_objective="tmacs").validate()
+
     def test_audit_prefers_unvalidated_genes_and_adds_the_fastest(self) -> None:
         fast = individual(Genome(1, 8, 22, 0, 4), 1.0)
         padded = individual(Genome(1, 8, 22, 0, 4, padding_window=8), 2.0)
@@ -317,12 +344,11 @@ class ScoringTests(unittest.TestCase):
 
 
 class DecisionTests(unittest.TestCase):
-    def test_tau_verdicts(self) -> None:
+    def test_tau_disagreements(self) -> None:
         names = ["a", "b", "c", "x"]
         within = {"a": True, "b": True, "c": True, "x": False}
-        self.assertEqual(tau_decide(names, {"a": True, "b": True, "c": False, "x": False}, within)["verdict"], "CONFIRMED")
-        self.assertEqual(tau_decide(names, {"a": True, "b": True, "c": True, "x": True}, within)["verdict"], "UNSAFE")
-        self.assertEqual(tau_decide(names, {"a": True, "b": False, "c": False, "x": False}, within)["verdict"], "TOO_STRICT")
+        result = disagreements(names, {"a": True, "b": False, "c": False, "x": True}, within)
+        self.assertEqual(result, {"false_safe": ["x"], "false_reject": ["b", "c"]})
 
     def test_feasibility_uses_the_lower_bound_tail_and_coverage(self) -> None:
         limits = SimpleNamespace(min_ear=0.987, min_tail_ear=0.97, min_answer_coverage=0.99)
@@ -334,19 +360,21 @@ class DecisionTests(unittest.TestCase):
 
     def test_ranking_compares_speedups_over_dense(self) -> None:
         predicted = {"a": 2.0, "b": 3.0, "c": 4.0}
-        self.assertTrue(ranking(predicted, {"dense": 12.0, "a": 8.0, "b": 6.0, "c": 3.0})["passed"])
-        self.assertFalse(ranking(predicted, {"dense": 12.0, "a": 3.0, "b": 6.0, "c": 8.0})["passed"])
+        self.assertAlmostEqual(ranking(predicted, {"dense": 12.0, "a": 8.0, "b": 6.0, "c": 3.0})["spearman"], 1.0)
+        self.assertAlmostEqual(ranking(predicted, {"dense": 12.0, "a": 3.0, "b": 6.0, "c": 8.0})["spearman"], -1.0)
 
-    def row(self, name, speed, within=True, seed=False):
-        return {"policy": name, "measured_speedup": speed, "within_margin": within, "seed": seed}
+    def row(self, name, speed, net_loss=0, seed=False):
+        return {"policy": name, "measured_speedup": speed, "net_loss": net_loss, "seed": seed}
 
-    def test_success_needs_faithful_fast_and_ahead_of_the_best_seed(self) -> None:
-        seed = self.row("seed", 2.0, seed=True)
-        self.assertEqual(search.success([seed, self.row("good", 2.3)])["winners"], ["good"])
-        self.assertFalse(search.success([seed, self.row("near", 2.1)])["success"])  # under 10% ahead
-        self.assertFalse(search.success([seed, self.row("lossy", 3.0, within=False)])["success"])
-        self.assertFalse(search.success([self.row("slow", 1.8)])["success"])
-        self.assertFalse(search.success([seed])["success"])  # a seed alone is not a searched policy
+    def test_speedup_summary_orders_searched_policies_against_the_fastest_seed(self) -> None:
+        rows = [self.row("seed_a", 2.0, seed=True), self.row("seed_b", 1.5, seed=True),
+                self.row("slow", 1.8), self.row("fast", 3.0, net_loss=4)]
+        summary = search.speedup_summary(rows)
+        self.assertEqual(summary["fastest_seed"], {"policy": "seed_a", "measured_speedup": 2.0, "net_loss": 0})
+        self.assertEqual([row["policy"] for row in summary["searched"]], ["fast", "slow"])
+        self.assertEqual(summary["searched"][0]["net_loss"], 4)
+        self.assertAlmostEqual(summary["searched"][0]["over_fastest_seed"], 1.5)
+        self.assertIsNone(search.speedup_summary([self.row("only", 2.0)])["fastest_seed"])
 
 
 class TaskSetTests(unittest.TestCase):
@@ -393,6 +421,79 @@ class AdvanceTests(unittest.TestCase):
             summary = json.loads((search.generation_dir(output, 1) / "summary.json").read_text())
             self.assertEqual(len(summary["population"]), 6)
             self.assertFalse(search.generation_dir(output, 2).exists())
+
+    def test_flops_objective_advances_without_a_table(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "search"
+            evolution = settings(cost_objective="flops", cost_table=None)
+            config = SimpleNamespace(evolution=evolution, evaluation=SimpleNamespace(max_prompts=2))
+            with mock.patch.object(search, "load_kv_policy_experiment_config", return_value=config):
+                search.advance(Path("c"), output)
+                folder = search.generation_dir(output, 0)
+                names = [genome.name for genome in search.read_genomes(folder)]
+                (folder / "tasks").mkdir()
+                for index in range(2):
+                    record = task_record(index, name=names[0])
+                    record["policies"] = {name: dict(record["policies"][names[0]], flops=1 + position)
+                                          for position, name in enumerate(names)}
+                    (folder / "tasks" / f"task_{index:03d}.json").write_text(json.dumps(record))
+                search.advance(Path("c"), output)
+            summary = json.loads((folder / "summary.json").read_text())
+            self.assertEqual(summary["cost_objective"], "flops")
+            costs = [raw["objectives"]["cost"] for raw in summary["evaluated"]]
+            self.assertEqual(costs, [(1 + position) / 4 for position in range(len(names))])
+
+
+class PaddedFlopsTests(unittest.TestCase):
+    shape = ModelShape(hidden_size=4, intermediate_size=8, num_heads=2, num_kv_heads=1, num_layers=3, vocab_size=10)
+    generation = SimpleNamespace(steps=2, gen_length=6)
+    tasks = [{"task_id": "a", "prompt_tokens": 4, "rows": [{"active": 10, "full_depth": 10, "masked": 6},
+                                                            {"active": 2, "full_depth": 9, "masked": 5}]},
+             {"task_id": "b", "prompt_tokens": 2, "rows": [{"active": 8, "full_depth": 8, "masked": 6},
+                                                            {"active": 7, "full_depth": 1, "masked": 4}]}]
+
+    def own_flops(self, task, depth):
+        length = task["prompt_tokens"] + 6
+        layer_rows = sum((depth - 1) * row["full_depth"] + (3 - depth + 1) * row["active"] for row in task["rows"])
+        return (layer_rows * layer_flops(self.shape, 1, length)
+                + sum(row["masked"] for row in task["rows"]) * lm_head_flops(self.shape, 1))
+
+    def test_batch_one_is_each_tasks_own_flops(self) -> None:
+        for depth in (1, 2):
+            policy, dense = padded_batch_flops(self.shape, self.tasks, 1, depth, 2, 6)
+            self.assertEqual(policy, sum(self.own_flops(task, depth) for task in self.tasks))
+            self.assertEqual(dense, 2 * (dense_forward_flops(self.shape, 10) + dense_forward_flops(self.shape, 8)))
+
+    def test_a_batch_charges_every_request_its_largest_rows_and_length(self) -> None:
+        policy, dense = padded_batch_flops(self.shape, self.tasks, 2, 2, 2, 6)
+        # Step 0: full 10, active 10, masked 6; step 1: full 9, active 7, masked 5; length 10.
+        rows = (1 * 10 + 2 * 10) + (1 * 9 + 2 * 7)
+        self.assertEqual(policy, 2 * (rows * layer_flops(self.shape, 1, 10) + 11 * lm_head_flops(self.shape, 1)))
+        self.assertEqual(dense, 2 * 2 * dense_forward_flops(self.shape, 10))
+        self.assertGreater(policy, sum(self.own_flops(task, 2) for task in self.tasks))
+
+    def test_padded_objective_ranks_on_padded_flops(self) -> None:
+        genome = Genome(1, 8, 22, 0)
+        records = [task_record(index, name=genome.name, rows=task["rows"]) | {"prompt_tokens": task["prompt_tokens"],
+                                                                                "task_id": task["task_id"]}
+                   for index, task in enumerate(self.tasks)]
+        evolution = settings(cost_objective="padded_flops", cost_table=None, objective_batch_size=2)
+        item = search.score(genome, records, evolution, shape=self.shape, generation=self.generation)
+        policy, dense = padded_batch_flops(self.shape, self.tasks, 2, 22, 2, 6)
+        self.assertEqual(item.cost, policy / dense)
+        self.assertEqual(item.objectives, (policy / dense,))
+        self.assertEqual(item.constraints["predicted_speedup"], dense / policy)
+        self.assertEqual(item.constraints["flops_speedup"], 4.0)
+        self.assertEqual(search.cost_of(item, evolution), policy / dense)
+        with self.assertRaises(ValueError):
+            search.score(genome, records, evolution)
+        with self.assertRaises(ValueError):
+            search.cost_of(individual(), evolution)
+
+    def test_config_accepts_padded_flops_without_a_table(self) -> None:
+        settings(cost_objective="padded_flops", cost_table=None).validate()
+        with self.assertRaises(ValueError):
+            settings(cost_objective="padded_flops", cost_table=None, objective_batch_size=0).validate()
 
 
 if __name__ == "__main__":

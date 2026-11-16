@@ -10,7 +10,7 @@ from dlm_kv_policy.code_correctness_and_latency_evaluator import (
     DiffuCoderKVPolicyEvaluator,
     output_hash,
 )
-from dlm_kv_policy.forced_trajectory_replay import (
+from dlm_kv_policy.teacher_forcing import (
     large_margin_decision_changes,
     step_divergence,
     step_metrics,
@@ -46,7 +46,7 @@ def generation_record(code: dict[str, str], statuses: dict[str, str]) -> dict:
     }
 
 
-class ReplayMetricTests(unittest.TestCase):
+class TeacherForcingMetricTests(unittest.TestCase):
     def test_identical_logits_have_zero_kl_and_no_flips(self) -> None:
         logits = torch.tensor([[2.0, 1.0, 0.0], [0.0, 3.0, 0.0]])
         confidence = torch.tensor([-0.5, -0.1])

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rivanna paths. Submit from the frozen source snapshot; resources are explicit in sbatch.
 set -euo pipefail
-MODE="${1:?proxy, cost, report, ear, ear-report, search-advance, search-evaluate, search-dense, search-check, search-audit, search-plus, evaluate-policies, tau, tau-time or tau-report}"
+MODE="${1:?proxy, cost, report, ear, ear-report, search-advance, search-evaluate, search-dense, search-check, search-audit, search-plus, evaluate-policies, tau, tau-time, tau-report, cost-panel-time or cost-panel-report}"
 shift
 cd "${SLURM_SUBMIT_DIR:?Submit from the source snapshot}"
 export PYTHONPATH="$PWD/ecad-dlm:$PWD${PYTHONPATH:+:$PYTHONPATH}"
@@ -24,6 +24,8 @@ case "$MODE" in
     search-dense) nvidia-smi; srun "$PYTHON_BIN" -u -m evolution.constrained_kv_policy_search dense "$@" ;;
     tau) nvidia-smi; srun "$PYTHON_BIN" -u -m experiments.tau_confirmation run "$@" ;;
     tau-time) nvidia-smi; srun "$PYTHON_BIN" -u -m experiments.tau_confirmation time "$@" ;;
+    cost-panel-time) nvidia-smi; srun "$PYTHON_BIN" -u -m experiments.cost_model_panel time "$@" ;;
+    cost-panel-report) "$PYTHON_BIN" -u -m experiments.cost_model_panel report "$@" ;;
     search-evaluate) nvidia-smi; srun "$PYTHON_BIN" -u -m evolution.constrained_kv_policy_search evaluate "$@" ;;
     search-check) nvidia-smi; srun "$PYTHON_BIN" -u -m evolution.constrained_kv_policy_search check "$@" ;;
     report|ear-report|search-audit|search-plus|evaluate-policies|tau-report)

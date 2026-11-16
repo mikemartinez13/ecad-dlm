@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Freeze the source, then chain: one-task pilot -> 16 shards -> report. All GPU jobs
-# use the A100 80GB; ear_validity.py refuses any other GPU, because every replay must
+# use the A100 80GB; ear_validity.py refuses any other GPU, because every teacher-forced pass must
 # reproduce the proxy recheck exactly. The pilot's task is reused by its shard.
 set -euo pipefail
 REPO="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"

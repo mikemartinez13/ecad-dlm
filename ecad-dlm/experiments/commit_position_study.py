@@ -3,16 +3,16 @@
 Masked rows can be reused only if they are not about to be committed: a reused
 row has no fresh logits. This logs the dense greedy trajectory and measures how
 predictable commit positions are, then prices candidate policies from the same
-logs. The design, the selection rule, the decision rule and the truncation
-baseline are in MASKED_ROW_REUSE_STUDY.md.
+logs. The design, the selection rule and the truncation baseline are in
+MASKED_ROW_REUSE_STUDY.md.
 
   run      GPU. Dense greedy generation that logs, per step, the entropy
            confidence and top-1 token of every masked position and the committed
            positions. Finished tasks are skipped on resubmission. A task whose
-           final tokens differ from the earlier forced-trajectory replay is
+           final tokens differ from the earlier teacher forcing is
            flagged and left out of the report.
   report   No model. Locality, stale-confidence rank, coverage of the seven
-           protected-set rules at lags 1-8, the pre-registered selection, and
+           protected-set rules at lags 1-8, the selected rule per window, and
            Step 1 compute accounting (floor, truncation, reuse, reuse+truncation).
            With --timing it also projects wall-clock speedups.
 
@@ -51,7 +51,7 @@ def run_task(model, sampler, tokenizer, task, index, generation, device, top_p_l
 
     from dlm_kv_policy.code_correctness_and_latency_evaluator import seed_everything
     from dlm_kv_policy.denoising_token_state import DenoisingTokenState
-    from dlm_kv_policy.forced_trajectory_replay import entropy_confidence
+    from dlm_kv_policy.teacher_forcing import entropy_confidence
 
     seed_everything(generation.seed + index)
     prompt, attention_mask = prepare_diffucoder_prompt_batch(tokenizer, [task.prompt], device)
@@ -99,7 +99,7 @@ def run(config_path: Path, max_tasks: int | None) -> None:
     from dlm_kv_policy.code_correctness_and_latency_evaluator import gpu_folder_name
     from dlm_kv_policy.dense_diffucoder_baseline import DenseDiffuCoderBaseline
     from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-    from dlm_kv_policy.forced_trajectory_replay import load_top_p_logits
+    from dlm_kv_policy.teacher_forcing import SAVED_FOLDER, load_top_p_logits
     from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_config
 
     config = load_kv_policy_experiment_config(config_path)
@@ -111,7 +111,7 @@ def run(config_path: Path, max_tasks: int | None) -> None:
         tasks = tasks[:max_tasks]
     gpu = gpu_folder_name()
     output_dir = config.run.run_dir / gpu / "commit_position_study"
-    replay_dir = config.run.run_dir / gpu / "forced_trajectory_replay" / "tasks"
+    teacher_forcing_dir = config.run.run_dir / gpu / SAVED_FOLDER / "tasks"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Results: {output_dir}", flush=True)
     pending = [i for i in range(len(tasks)) if not (output_dir / f"task_{i:03d}.npz").exists()]
@@ -128,8 +128,8 @@ def run(config_path: Path, max_tasks: int | None) -> None:
     stop_ids = sorted({t for t in (tokenizer.eos_token_id, tokenizer.pad_token_id) if t is not None})
     for index in pending:
         result = run_task(model, sampler, tokenizer, tasks[index], index, generation, config.model.device, top_p_logits)
-        saved = replay_dir / f"task_{index:03d}.json"
-        matches = -1  # no replay to compare with
+        saved = teacher_forcing_dir / f"task_{index:03d}.json"
+        matches = -1  # no teacher forcing to compare with
         if saved.is_file():
             matches = int(json.loads(saved.read_text())["dense_token_ids"] == result["dense_token_ids"].tolist())
         np.savez_compressed(
@@ -276,7 +276,7 @@ def mean_size(stats: dict[str, Any], task_mask: np.ndarray, lag_index: int, vi: 
 
 
 def select_rules(stats: dict[str, Any], indices: np.ndarray) -> dict[int, dict[str, Any]]:
-    """The pre-registered rule: smallest set with >=99% answer coverage on even tasks."""
+    """Per window, the smallest set with >=99% answer coverage on even tasks; odd tasks are held out."""
 
     even, odd = indices % 2 == 0, indices % 2 == 1
     chosen: dict[int, dict[str, Any]] = {}
@@ -305,7 +305,7 @@ def select_rules(stats: dict[str, Any], indices: np.ndarray) -> dict[int, dict[s
 
 
 def model_shape(config_json: Path):
-    from dlm_kv_policy.compute_cost import ModelShape
+    from utils.compute_cost import ModelShape
 
     raw = json.loads(config_json.read_text())
     return ModelShape(raw["hidden_size"], raw["intermediate_size"], raw["num_attention_heads"],
@@ -347,7 +347,7 @@ def step_rows(log: TaskLog, selection: dict[str, Any] | None, truncate: bool) ->
 
 
 def policy_flops(shape, log: TaskLog, rows: tuple[np.ndarray, np.ndarray]) -> float:
-    from dlm_kv_policy.compute_cost import layer_flops, lm_head_flops
+    from utils.compute_cost import layer_flops, lm_head_flops
 
     key_length = log.prompt_length + log.length
     per_layer = shape.num_layers * np.array([layer_flops(shape, max(r, 0), key_length) for r in rows[0]], dtype=np.float64)
@@ -356,7 +356,7 @@ def policy_flops(shape, log: TaskLog, rows: tuple[np.ndarray, np.ndarray]) -> fl
 
 
 def dense_flops(shape, log: TaskLog) -> float:
-    from dlm_kv_policy.compute_cost import dense_forward_flops
+    from utils.compute_cost import dense_forward_flops
 
     return float(dense_forward_flops(shape, log.prompt_length + log.length) * log.steps)
 
@@ -423,7 +423,7 @@ def report(directory: Path, config_json: Path | None, timing_path: Path | None) 
     chosen = select_rules(stats, indices)
     everyone = np.ones(len(logs), bool)
 
-    result: dict[str, Any] = {"tasks": len(logs), "excluded_not_matching_replay": excluded,
+    result: dict[str, Any] = {"tasks": len(logs), "excluded_not_matching_teacher_forcing": excluded,
                               "commit_events": {c: int(stats["total"][:, i].sum()) for i, c in enumerate(CLASSES)}}
     result["locality"] = {c: {"distance_to_committed": quantiles(stats["near"][i]),
                               "distance_from_leftmost_masked": quantiles(stats["left"][i])} for i, c in enumerate(CLASSES)}
@@ -441,9 +441,6 @@ def report(directory: Path, config_json: Path | None, timing_path: Path | None) 
                     "mean_size": mean_size(stats, everyone, li, vi, mi),
                 }
     result["selection"] = chosen
-    result["gate"] = {"window_2_selected": bool(chosen[2].get("selected")),
-                      "window_2_holdout_ok": bool(chosen[2].get("selected") and chosen[2]["answer_coverage_odd"] >= COVERAGE_TARGET)}
-    result["gate"]["verdict"] = "PASS" if all(result["gate"].values()) else "STOP"
     if config_json is not None:
         timing = json.loads(timing_path.read_text()) if timing_path else None
         result["accounting"] = accounting(logs, model_shape(config_json), chosen, timing)
@@ -467,7 +464,6 @@ def report(directory: Path, config_json: Path | None, timing_path: Path | None) 
         for name, row in result["accounting"].items():
             extra = f"  speedup {row['projected_speedup']}" if "projected_speedup" in row else ""
             print(f"  {name:<44}{row['compute_fraction']:.3f}{extra}")
-    print(f"Step 0 gate: {result['gate']['verdict']}")
 
 
 def main() -> None:

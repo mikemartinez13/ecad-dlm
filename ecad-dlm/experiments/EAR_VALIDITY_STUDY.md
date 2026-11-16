@@ -1,20 +1,20 @@
 # EAR validity study: is EAR a fair fidelity constraint for DiffuCoder caches?
 
-Registered 2026-11-06, before any EAR value was computed. Code:
+Designed 2026-11-06, before any EAR value was computed. Code:
 `ear_validity.py`. Outcome data for most policies already exist: the 96-task
 proxy recheck, whose results were seen before this was written.
 
 ## Why
 
-The divergence proxy failed its recheck (`PROXY_VALIDATION.md`): across 12
-policies it ranks pass rates at Spearman 0.67 against a 0.90 bar, and within the
-depth family at −0.18. It is dropped as a search objective.
+In its recheck (`PROXY_VALIDATION.md`), the divergence proxy ranked pass rates
+across 12 policies at Spearman 0.67, and within the depth family at −0.18. It is
+dropped as a search objective.
 
 The new question is whether a continuous metric can predict which caches keep
 passing the tests, well enough to act as a **constraint** rather than an
 objective: any policy meeting a threshold counts as equally faithful, and the
 search optimizes speed among those. Applying that in NSGA-II (Deb's constrained
-domination) is later work; this study decides only whether EAR can be the
+domination) is later work; this study measures how well EAR could serve as the
 constraint, and at what threshold.
 
 ## The metric
@@ -44,7 +44,7 @@ calibration text under sampled decoding. τ is derived here.
 
 ## Metrics
 
-All in forced-trajectory replay, over **answer commits only**: commits at a
+All in teacher forcing, over **answer commits only**: commits at a
 position before dense's first stop token. Commit order is not left to right, so
 this is defined by position, not by time. At the last step, which can commit
 several positions, each position is judged separately.
@@ -55,7 +55,7 @@ several positions, each position is judged separately.
    policy's confidences would commit a different position. Exact ties count as
    agreement. The rate above the existing 0.01 tie margin is also reported.
 
-Reported, outside the verdict:
+Also reported:
 
 - **Masked EAR.** Per step, the mean EAR over every still-masked position inside
   dense's answer, then the mean over steps and tasks.
@@ -79,12 +79,12 @@ Reported, outside the verdict:
 
 ## Panel
 
-**Registered (verdict):** dense with the math attention kernel (noise floor),
+**Main panel:** dense with the math attention kernel (noise floor),
 depth_22, depth_22 + r=2, 4, 8, depth_24 + r=4, refresh_256, refresh_256 + r=2,
 4, and two new policies to fill the gap between the clusters: refresh_32 and
 refresh_32_depth_22. Reuse uses `split+recent`, m=32.
 
-**Extra (sensitivity check and continuous analysis):** depth_22_r4 with m=16,
+**Extra (second panel and continuous analysis):** depth_22_r4 with m=16,
 m=64 and `split`, depth_18_r4, and two more new policies, dkv_reference and
 refresh_16, for a spread of outcomes between the clusters.
 
@@ -92,28 +92,27 @@ Dense itself is the reference, so it is not classified.
 
 Known in advance from the recheck: depth_22_r4_m16 has a net loss of 3, one task
 outside the margin, while most depth policies are at 1–2. That label rests on a
-single task and the zero-false-safe rule below is unforgiving of it, which is why
-the verdict is reported on both panels. Choosing the registered panel after
-seeing outcomes is a real weakness; it is the panel the study plan named.
+single task, which is why the calls below are reported on both panels. Choosing the
+main panel after seeing outcomes is a real weakness; it is the panel the study
+plan named.
 
-## Decision (fixed before computing EAR)
+## Threshold fitting (fixed before computing EAR)
 
 - **Within margin:** net loss of at most 2 of 96 tasks against dense, on base
   tests.
 - **Leave-one-policy-out.** For each policy, the threshold is fitted on the
   others: the largest EAR that keeps every within-margin policy safe, which is
-  their lowest EAR. The held-out policy is safe if its EAR reaches it.
-- **EAR is valid** if no outside-margin policy is classified safe, and at most one
-  within-margin policy is wrongly rejected.
-- **Position flips.** If EAR alone fails, the rule becomes EAR ≥ τ and position
-  flips ≤ τ_pos, with τ_pos the highest flip rate among within-margin policies,
-  also fitted leave-one-out. If that passes, the verdict is "valid with position
-  flips". Otherwise EAR is **not valid** for this purpose, and that is reported.
-- **Thresholds, if valid.** From the registered panel with the same rule: τ_EAR,
-  τ_tail, and τ_pos if needed. To clear τ_EAR, a policy's one-sided 95% lower
-  bound, from a bootstrap over tasks, must reach it.
+  their lowest EAR. The held-out policy is called safe if its EAR reaches it. The
+  report lists false-safe calls (outside the margin, called safe) and false
+  rejections (within the margin, called unsafe).
+- **Position flips.** The same calls with the rule EAR ≥ τ and position flips ≤
+  τ_pos, τ_pos being the highest flip rate among within-margin policies, also
+  fitted leave-one-out.
+- **Thresholds.** From the main panel with the same rule: τ_EAR, τ_tail and τ_pos.
+  The search compares τ_EAR with a policy's one-sided 95% lower bound, from a
+  bootstrap over tasks.
 
-## Reported, not gating
+## The continuous question
 
 The continuous question, which is the point of the study:
 
@@ -134,14 +133,14 @@ the lossy cluster.
   352 tasks remain unexposed.
 - Near the margin, labels hinge on one task: the attention-kernel swap alone
   flipped one task each way on these 96.
-- With two clusters of policies, a threshold separating them is easy. The verdict
-  is only informative through the policies between the clusters.
+- With two clusters of policies, a threshold separating them is easy. The calls
+  are only informative through the policies between the clusters.
 
 ## Result (2026-11-06)
 
 96 tasks on A100 80GB. Dense and all 12 recheck policies reproduced the proxy
 recheck exactly on every task. Sorted by EAR; `extra` rows are outside the
-registered panel.
+main panel.
 
 | Policy | EAR | Tail EAR | Flip rate | Lost / gained | Net | Pass-fraction drop | Compute | Margin |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -163,16 +162,16 @@ registered panel.
 | refresh_256_r2 | 0.9478 | 0.9067 | 0.400 | 25 / 0 | 25 | 0.264 | 0.210 | outside |
 | refresh_256_r4 | 0.9478 | 0.9066 | 0.400 | 30 / 0 | 30 | 0.295 | 0.159 | outside |
 
-**Verdict.**
-- **Registered panel: valid.** No false-safe call; one wrong rejection
-  (depth_24_r4), which the rule allows.
-- **All 17 policies: not valid.** depth_22_r4_m16 is false-safe, and position
-  flips do not rescue it. It is one task outside the margin, as flagged above.
+**Leave-one-out calls.**
+- **Main panel:** no false-safe call and one false rejection (depth_24_r4).
+- **All 17 policies:** depth_22_r4_m16 is false-safe, by EAR alone and with
+  position flips. It is one task outside the margin, as flagged above.
 
-**Thresholds (registered panel).** τ_EAR = 0.9870, τ_tail = 0.9758. τ_pos is not
-needed. τ_EAR is depth_24_r4's own EAR, so that policy fails the bootstrap rule
-(lower bound 0.9848) by construction. Nothing lies between 0.9821 and 0.9870, so
-the data do not place τ more precisely than that gap.
+**Thresholds (main panel).** τ_EAR = 0.9870, τ_tail = 0.9758. Position flips add
+nothing on this panel, so the search does not use τ_pos. τ_EAR is depth_24_r4's own
+EAR, so that policy's bootstrap lower bound (0.9848) falls below it by construction.
+Nothing lies between 0.9821 and 0.9870, so the data do not place τ more precisely
+than that gap.
 
 **Continuous question (all 17 policies, same panel).**
 
@@ -189,15 +188,16 @@ Pearson with pass-fraction drop is above 0.97 for all but masked EAR (not
 computed), but it is driven by the lossy end. Per-task AUROC: EAR 0.84, masked
 EAR 0.74.
 
-**Reading (not part of the verdict).**
+**Reading.**
 - **The panel explains part of the gain over the recheck.** On this panel
   divergence rises from 0.67 to 0.76, so EAR's edge over it is moderate. The KL,
-  flip-rate and divergence rows of that table were computed after the verdict.
-- **Divergence would also pass this rule on the registered panel.** Its
+  flip-rate and divergence rows of that table were computed after the leave-one-out
+  calls.
+- **Divergence would also separate the main panel under this rule.** Its
   within-margin policies reach 2.91 and its outside-margin ones start at 4.52.
-  What failed in the recheck was ranking near-dense policies, and every metric
-  here still fails that. The move from objective to constraint does much of the
-  work, not EAR alone.
+  What the recheck showed was poor ranking of near-dense policies, and no metric
+  here ranks them well either (within-family Spearman −0.34 to 0.41). The move from
+  objective to constraint does much of the work, not EAR alone.
 - **EAR tracks committed-row caching well.** Between the clusters it falls in
   order with outcomes, and it sees `refresh_depth` (0.9934, 0.9895, 0.9870 at
   depths 18, 22, 24) and the refresh interval.

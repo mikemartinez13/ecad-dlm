@@ -74,7 +74,7 @@ class DiffuCoderDenoisingSampler:
         """Unmask this step's tokens in ``x`` in place, as DiffuCoder's sampler does.
 
         ``candidates``, if given, marks the rows of ``mask_logits`` that may be
-        committed (see masked_row_reuse_replay.py); the others get no confidence.
+        committed (see masked_row_reuse_teacher_forcing.py); the others get no confidence.
         """
 
         mask_token_id = int(self.model.config.mask_token_id)
@@ -125,6 +125,28 @@ class DiffuCoderDenoisingSampler:
             x[rows, selected_positions] = proposed_full[rows, selected_positions]
 
     @torch.no_grad()
+    def commit_packed(self, x, result, confidence, proposed, transfer):
+        """Greedy entropy commit from packed logits; returns the updated per-position stores.
+
+        ``confidence`` and ``proposed`` [B,L+1] hold every position's values from the
+        last step its logits were computed. Rows absent from ``result`` are unchanged.
+        """
+
+        if result.positions.shape[1]:
+            logits = result.logits
+            row_confidence, row_tokens = self.sample_tokens(
+                logits.reshape(-1, logits.shape[-1]), 0, top_p=1, top_k=None, neg_entropy=True)
+            confidence = confidence.scatter(1, result.positions, row_confidence.reshape(result.positions.shape))
+            proposed = proposed.scatter(1, result.positions, row_tokens.reshape(result.positions.shape))
+        if transfer > 0:
+            torch._assert_async((result.committable.sum(-1) >= transfer).all(),
+                                "Protected set is too small for this step's commit count")
+            allowed = confidence[:, :-1].masked_fill(~result.committable, -torch.inf)
+            chosen = torch.topk(allowed, transfer).indices
+            x.scatter_(1, chosen, proposed.gather(1, chosen))
+        return confidence, proposed
+
+    @torch.no_grad()
     def generate(
         self,
         prompt: torch.Tensor,
@@ -161,10 +183,31 @@ class DiffuCoderDenoisingSampler:
         history: list[torch.Tensor] = []
         timesteps = torch.linspace(1, 1e-12, steps + 1, device=x.device)
         schedule = commit_schedule(timesteps, gen_length) if batched else None
+        # Backends with forward_step return packed logits; commits then need no boolean
+        # indexing, so the loop never waits for the GPU between steps.
+        packed = batched and getattr(self.backend, "forward_step", None) is not None
+        confidence = proposed = None
         if x.is_cuda:
             torch.cuda.synchronize(x.device)
         started = perf_counter()
         for step in range(steps):
+            if packed:
+                result = self.backend.forward_step(input_ids=x, attention_mask=model_attention_mask,
+                    position_ids=position_ids, state=state, step=step, total_steps=steps)
+                previous = x.clone()
+                if confidence is None:
+                    # One spare slot per request takes the dummy rows of each step.
+                    confidence = torch.full((x.shape[0], x.shape[1] + 1), -torch.inf, device=x.device,
+                                            dtype=result.logits.dtype)
+                    proposed = torch.full_like(confidence, mask_token_id, dtype=torch.long)
+                confidence, proposed = self.commit_packed(x, result, confidence, proposed, schedule[step])
+                state.update_after_sampling(previous, x, step)
+                expected = gen_length - sum(schedule[:step + 1])
+                torch._assert_async(((x.eq(mask_token_id) & state.generated_mask).sum(-1) == expected).all(),
+                                    "Model emitted MASK or candidate set could not satisfy commit schedule")
+                if collect_history:
+                    history.append(x.detach().cpu().clone())
+                continue
             mask_index = x.eq(mask_token_id)
             if batched:
                 mask_index &= state.generated_mask

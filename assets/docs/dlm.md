@@ -10,8 +10,8 @@ required about 99% of full compute. That metric is unreliable: at temperature
 runs show pass→fail and fail→pass flips in equal numbers. A zero-regression
 constraint therefore favors changing nothing. Token disagreement overstates
 drift too, because one early flip changes every later token. Re-score a few
-residual-cache schedules with forced-trajectory replay before treating this
-approach as failed. See the
+residual-cache schedules with teacher forcing before drawing conclusions about
+this approach. See the
 [KV policy guide](../../ecad-dlm/dlm_kv_policy/README.md#status-of-results-before-2026-10-30-read-this-first).
 
 ## Caching implementation

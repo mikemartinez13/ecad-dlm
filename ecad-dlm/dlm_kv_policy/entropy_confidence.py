@@ -1,4 +1,4 @@
-"""DiffuCoder entropy confidence shared by replay and decoding."""
+"""DiffuCoder entropy confidence shared by teacher forcing and decoding."""
 import torch
 
 def entropy_confidence(logits: torch.Tensor, temperature: float, top_p: float, top_p_logits) -> torch.Tensor:

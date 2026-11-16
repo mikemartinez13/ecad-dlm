@@ -11,9 +11,10 @@ export PYTHONPATH="$PWD/ecad-dlm:$PWD"   # from the repository root
 | Folder | Contents |
 | --- | --- |
 | `language_models/` | Model loading, code tasks, EvalPlus execution, residual-cache runtime, DLM schedules |
-| `dlm_kv_policy/` | DiffuCoder K/V caching: policies, backends (batch one and batched), sampler, compute accounting, and the divergence proxy (`forced_trajectory_replay.py`, `validate_proxy.py`) |
+| `dlm_kv_policy/` | DiffuCoder K/V caching: policies, backends (batch one and batched), sampler, and the divergence proxy (`teacher_forcing.py`, `validate_proxy.py`) |
 | `evolution/` | NSGA-II searches over K/V policies and residual-cache schedules; see `experiments/CONSTRAINED_SEARCH.md` |
 | `experiments/` | Studies and their documents, `configs/` and `scripts/`, including the proxy recheck, cost study and EAR validity study |
+| `utils/` | Helpers outside the caching method: FLOP counting (`compute_cost.py`, the search's cost), row packing (`row_index.py`), result files and source hashes (`results_io.py`), rank statistics (`ranking.py`) |
 | `policies/` | Example policies for `experiments/evaluate_policies.py`, which tests saved policies against dense |
 | `tests/` | CPU tests. Run with `cd ecad-dlm/tests && python -m unittest discover -s . -p 'test_*.py'` |
 

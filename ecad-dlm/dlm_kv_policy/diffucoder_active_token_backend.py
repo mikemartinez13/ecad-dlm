@@ -9,8 +9,8 @@ import torch
 import torch.nn.functional as F
 
 from .active_token_kv_cache import ActiveTokenKVCache
-from .batched_row_index import gather_rows
-from .compute_cost import ModelShape, layer_flops, lm_head_flops
+from utils.row_index import gather_rows
+from utils.compute_cost import ModelShape, layer_flops, lm_head_flops
 from .cache_and_trajectory_diagnostics import KVCacheDiagnostics
 from .fixed_token_refresh_policy import TokenRefreshDecision
 from .denoising_token_state import DenoisingTokenState
@@ -66,7 +66,7 @@ class ActiveTokenForwardResult:
     mask_logits: torch.Tensor
     decision: TokenRefreshDecision
     # Optional bool per row of mask_logits: which positions may be committed
-    # this step. None means all; set by masked_row_reuse_replay.py.
+    # this step. None means all; set by masked_row_reuse_teacher_forcing.py.
     candidates: torch.Tensor | None = None
 
 

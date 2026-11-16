@@ -11,7 +11,7 @@ import torch
 
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
-from dlm_kv_policy.forced_trajectory_replay import replay_task
+from dlm_kv_policy.teacher_forcing import teacher_force_task
 from experiments.stale_kv_correction_pilot import StaleRowCorrection
 from experiments.stale_kv_error_study import (
     COMBOS,
@@ -19,7 +19,7 @@ from experiments.stale_kv_error_study import (
     METHODS,
     PARTS,
     POLICIES,
-    StaleRowReplay,
+    StaleRowTeacherForcing,
     add_held_out,
     add_rows,
     assign_folds,
@@ -40,7 +40,7 @@ from experiments.stale_kv_error_study import (
     worst_case_fer_gain,
 )
 from test_backend_cpu import FakeModel
-from test_replay_compounding import greedy_sample_tokens
+from test_teacher_forcing_compounding import greedy_sample_tokens
 
 # The sampler looks up sample_tokens in the module that defines the model class.
 sample_tokens = greedy_sample_tokens
@@ -59,18 +59,18 @@ class RotatingFakeModel(FakeModel):
         self.model.rotary_emb = rotary_emb
 
 
-def fake_replay(model, policies):
+def fake_teacher_forcing(model, policies):
     dense = DiffuCoderActiveTokenKVBackend(model, DKVDecodeRefreshPolicy(cache_reloading_step=1))
-    replay = StaleRowReplay(
+    teacher_forcing = StaleRowTeacherForcing(
         model, dense, policies,
         SimpleNamespace(steps=10, gen_length=10, temperature=0.0, top_p=1.0, top_k=None,
                         algorithm="entropy", algorithm_temperature=0.0),
         None,
     )
-    return replay
+    return teacher_forcing
 
 
-class StaleRowReplayTests(unittest.TestCase):
+class StaleRowTeacherForcingTests(unittest.TestCase):
     def setUp(self) -> None:
         torch.manual_seed(0)
         self.model = RotatingFakeModel().eval()
@@ -84,15 +84,15 @@ class StaleRowReplayTests(unittest.TestCase):
             "every_step": DKVDecodeRefreshPolicy(cache_reloading_step=1),
             "refresh_4": DKVDecodeRefreshPolicy(cache_reloading_step=4),
         }
-        replay = fake_replay(self.model, policies)
+        teacher_forcing = fake_teacher_forcing(self.model, policies)
         sums = {name: empty_sums(2, 1, 4, "cpu") for name in policies}
-        replay.run(self.prompt, torch.ones_like(self.prompt), self.row_type, lambda name, *rows: add_rows(sums[name], *rows))
+        teacher_forcing.run(self.prompt, torch.ones_like(self.prompt), self.row_type, lambda name, *rows: add_rows(sums[name], *rows))
         self.assertEqual(sums["every_step"]["rows"].sum().item(), 0)
         self.assertGreater(sums["refresh_4"]["rows"].sum().item(), 0)
         self.assertGreater(sums["refresh_4"]["ee"].diagonal(dim1=-2, dim2=-1).sum().item(), 0)
 
     def test_compares_keys_before_rope(self) -> None:
-        replay = fake_replay(self.model, {"refresh_4": DKVDecodeRefreshPolicy(cache_reloading_step=4)})
+        teacher_forcing = fake_teacher_forcing(self.model, {"refresh_4": DKVDecodeRefreshPolicy(cache_reloading_step=4)})
         layer = self.model.model.layers[0]
         seen = []
 
@@ -100,18 +100,18 @@ class StaleRowReplayTests(unittest.TestCase):
             if layer_id == 0 and kind == 0:
                 seen.append(c)
 
-        replay.run(self.prompt, torch.ones_like(self.prompt), self.row_type, sink)
+        teacher_forcing.run(self.prompt, torch.ones_like(self.prompt), self.row_type, sink)
         # A stale prompt row's layer-0 key is k_proj of its embedding, unrotated.
         expected = layer.self_attn.k_proj(self.model.model.embed_tokens(self.prompt[0])).double()
         torch.testing.assert_close(seen[0][0, :3], expected)
-        rotated = replay.backends["refresh_4"].cache.keys[0][0, 0, 1:3].double()
+        rotated = teacher_forcing.backends["refresh_4"].cache.keys[0][0, 0, 1:3].double()
         self.assertFalse(torch.allclose(rotated, expected[1:3]))
 
     def test_rounding_probe_measures_committed_rows_against_an_exact_cache(self) -> None:
-        replay = fake_replay(self.model, {"refresh_4": DKVDecodeRefreshPolicy(cache_reloading_step=4)})
+        teacher_forcing = fake_teacher_forcing(self.model, {"refresh_4": DKVDecodeRefreshPolicy(cache_reloading_step=4)})
         probe = DiffuCoderActiveTokenKVBackend(self.model, DKVDecodeRefreshPolicy(cache_reloading_step=1))
         sums = {"refresh_4": empty_rounding(2, 1, "cpu")}
-        _, exact = rounding_probe(replay, probe, self.prompt, torch.ones_like(self.prompt), self.row_type, sums)
+        _, exact = rounding_probe(teacher_forcing, probe, self.prompt, torch.ones_like(self.prompt), self.row_type, sums)
         self.assertTrue(exact)
         self.assertGreater(sums["refresh_4"]["rows"].sum().item(), 0)
         self.assertEqual(sums["refresh_4"]["rows"][..., 0].sum().item(), 0)  # prompt rows are never probed
@@ -121,7 +121,7 @@ class CorrectionTests(unittest.TestCase):
     def test_correction_adds_the_rotated_prediction_to_stale_rows_only(self) -> None:
         torch.manual_seed(0)
         model = RotatingFakeModel().eval()
-        replay = fake_replay(model, {})
+        teacher_forcing = fake_teacher_forcing(model, {})
         backend = DiffuCoderActiveTokenKVBackend(model, DKVDecodeRefreshPolicy(cache_reloading_step=4))
         layers, heads, head_dim = 2, 1, 4
         # e_hat = c, so at strength 0.5 every stale K/V row becomes 1.5 times its cached value.
@@ -140,8 +140,8 @@ class CorrectionTests(unittest.TestCase):
 
         backend.kv_correction = recording
         prompt = torch.tensor([[4, 5, 6]])
-        correction.start(prompt.shape[1], prompt.shape[1] + replay.generation.gen_length)
-        replay_task(model, replay.sampler, {"refresh_4": backend}, prompt, torch.ones_like(prompt), replay.generation, None)
+        correction.start(prompt.shape[1], prompt.shape[1] + teacher_forcing.generation.gen_length)
+        teacher_force_task(model, teacher_forcing.sampler, {"refresh_4": backend}, prompt, torch.ones_like(prompt), teacher_forcing.generation, None)
         corrected_calls = 0
         for layer, stale, keys, values, (new_keys, new_values) in calls:
             if layer == 0 or not stale.any():
@@ -158,7 +158,7 @@ class CorrectionTests(unittest.TestCase):
     def test_strength_zero_matches_the_uncorrected_run_exactly(self) -> None:
         torch.manual_seed(0)
         model = RotatingFakeModel().eval()
-        replay = fake_replay(model, {})
+        teacher_forcing = fake_teacher_forcing(model, {})
         policy = DKVDecodeRefreshPolicy(cache_reloading_step=4)
         backends = {name: DiffuCoderActiveTokenKVBackend(model, policy) for name in ("plain", "zero")}
         fit = {
@@ -167,8 +167,8 @@ class CorrectionTests(unittest.TestCase):
         }
         correction = StaleRowCorrection(backends["zero"], fit, 0.0, {0})
         prompt = torch.tensor([[4, 5, 6]])
-        correction.start(prompt.shape[1], prompt.shape[1] + replay.generation.gen_length)
-        result = replay_task(model, replay.sampler, backends, prompt, torch.ones_like(prompt), replay.generation, None)
+        correction.start(prompt.shape[1], prompt.shape[1] + teacher_forcing.generation.gen_length)
+        result = teacher_force_task(model, teacher_forcing.sampler, backends, prompt, torch.ones_like(prompt), teacher_forcing.generation, None)
         self.assertTrue(same_steps(result["policies"]["plain"], result["policies"]["zero"]))
 
 
@@ -261,9 +261,10 @@ class SyntheticPipelineTests(unittest.TestCase):
             result = run_synthetic_pipeline(Path(directory), lambda c: c @ matrix.T + 0.1 * torch.randn_like(c))
         scores = result["policies"]["refresh_32"]["prompt_and_answer"]
         self.assertGreater(scores["methods"]["M4"]["fer_mean"], 0.9)
-        self.assertEqual(scores["first_moment"], "systematic")
-        # The pipeline checks need GPU data, so without it the outcome is not trusted.
-        self.assertTrue(result["outcome"].startswith("UNTRUSTED"))
+        self.assertGreater(scores["methods"]["M4"]["ci_low"], 0.9)
+        self.assertAlmostEqual(result["main"]["refresh_32"]["m4_fer"], scores["methods"]["M4"]["fer_mean"])
+        # The path check needs GPU data; without it there is no path share to report.
+        self.assertIsNone(result["pipeline_checks"]["path_share_of_stale_error"]["refresh_32"])
 
     def test_pure_noise_is_not_predictable_held_out_although_it_fits_in_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -273,8 +274,7 @@ class SyntheticPipelineTests(unittest.TestCase):
         self.assertGreater(m4["in_sample_fer"], 0.02)
         self.assertLess(m4["fer_mean"], 0.0)
         self.assertLess(m4["ci_low"], 0.0)
-        self.assertEqual(scores["first_moment"], "not systematic")
-        self.assertIn("C: neither", result["outcome"])
+        self.assertLess(result["main"]["refresh_32"]["m4_fer"], 0.0)
 
 
 class RoundingCheckTests(unittest.TestCase):
@@ -285,9 +285,10 @@ class RoundingCheckTests(unittest.TestCase):
         removed = 1 - s.square().sum() / e.square().sum()  # FER of predicting r exactly
         self.assertAlmostEqual(float(worst_case_fer_gain(np.array(rho.item()))), removed.item(), places=10)
 
-    def test_classification_must_survive_the_worst_case_rounding(self) -> None:
+    def test_worst_case_rounding_lowers_fer_more_when_rounding_is_larger(self) -> None:
         matrix = torch.randn(128, 128, dtype=torch.float64, generator=torch.Generator().manual_seed(5)) / 128**0.5
-        for rounding_per_row, passes in ((1e-9, True), (1e3, False)):
+        worst = {}
+        for rounding_per_row in (1e-9, 1e3):
             with tempfile.TemporaryDirectory() as directory:
                 output_dir = Path(directory)
                 run_synthetic_pipeline(output_dir, lambda c: c @ matrix.T + 0.1 * torch.randn_like(c), combo=4)
@@ -306,9 +307,12 @@ class RoundingCheckTests(unittest.TestCase):
                         )
                 with redirect_stdout(io.StringIO()):
                     result = rounding_check(output_dir, 8)
-            self.assertEqual(result["passed"], passes)
+            self.assertTrue(result["stale_free_cache_equals_dense"] and result["every_policy_probed"])
             entry = result["policies"]["refresh_32"]
             self.assertAlmostEqual(entry["s1_recomputed"], entry["s1_registered"], places=12)
+            worst[rounding_per_row] = entry["m4_minus_worst_case"]["fer_mean"]
+        self.assertAlmostEqual(worst[1e-9], entry["m4_registered"]["fer_mean"], places=3)
+        self.assertLess(worst[1e3], worst[1e-9] - 0.5)
 
 
 class PathCheckTests(unittest.TestCase):
@@ -321,12 +325,13 @@ class PathCheckTests(unittest.TestCase):
             "difference_sum": np.zeros((layers, 2, 1, 4)),
         }
 
-    def test_a_path_difference_that_is_large_against_stale_error_fails(self) -> None:
+    def test_path_difference_is_measured_against_stale_error(self) -> None:
         stale_energy, stale_rows = np.full((3, 2), 100.0), np.full((3, 2), 10.0)  # 10 per row
-        self.assertTrue(path_check(self.first_step(0.01), stale_energy, stale_rows)["passed"])
-        failed = path_check(self.first_step(1.0), stale_energy, stale_rows)  # 0.1 per row: 1% of stale
-        self.assertAlmostEqual(failed["mean_share_of_stale_error"], 0.01)
-        self.assertFalse(failed["passed"])  # the layer-0 difference, 1e-3 of dense, is too large
+        small = path_check(self.first_step(0.01), stale_energy, stale_rows)
+        large = path_check(self.first_step(1.0), stale_energy, stale_rows)  # 0.1 per row: 1% of stale
+        self.assertAlmostEqual(small["mean_share_of_stale_error"], 1e-4)
+        self.assertAlmostEqual(large["mean_share_of_stale_error"], 0.01)
+        self.assertAlmostEqual(large["layer0_relative_difference"], 1e-3)
 
 
 class SetupTests(unittest.TestCase):

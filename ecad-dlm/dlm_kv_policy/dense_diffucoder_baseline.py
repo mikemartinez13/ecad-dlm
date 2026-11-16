@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from .compute_cost import ModelShape, dense_forward_flops
+from utils.compute_cost import ModelShape, dense_forward_flops
 from .denoising_token_state import DenoisingTokenState
 
 
@@ -66,7 +66,7 @@ class BatchedDenseDiffuCoderBaseline(DenseDiffuCoderBaseline):
 
     @torch.no_grad()
     def forward_mask_logits(self, *, input_ids, attention_mask, position_ids, state, step, total_steps):
-        from .batched_row_index import pack_rows, gather_rows
+        from utils.row_index import pack_rows, gather_rows
         if isinstance(attention_mask, torch.Tensor):
             attention_mask = state.valid_mask.to(input_ids.device)[:, None, None, :].expand(
                 -1, 1, input_ids.shape[1], -1)

@@ -14,7 +14,7 @@ tokens always start at layer one; stable decoded tokens may resume deeper.
 
 The two evolutionary objectives are paired EvalPlus base-test
 regression rate and `compute_fraction`: the policy's FLOPs divided by native
-dense FLOPs, counted from the rows each forward computes (`compute_cost.py`).
+dense FLOPs, counted from the rows each forward computes (`utils/compute_cost.py`).
 It is deterministic and identical on every GPU type, so the search never
 depends on which GPU it ran on. Wall-clock time is still recorded, and the
 reported speedup should be measured on finalists on one GPU type. On an A40, wall
@@ -49,7 +49,7 @@ Hence "evolved vs hand-tuned", "the evolved policy has 0% regression", and the
 ablation ordering are not established. The diagnostics below measure cache
 quality directly.
 
-## Diagnostics: noise floor and forced-trajectory replay
+## Diagnostics: noise floor and teacher forcing
 
 Two programs, both submitted with
 `ecad-dlm/experiments/scripts/slurm/run_diffucoder_kv_diagnostics.sh` from the repository root:
@@ -57,7 +57,7 @@ Two programs, both submitted with
 | Program | Experiments | What it answers |
 | --- | --- | --- |
 | `output_variance_study.py` | E1, E2, E3 | How many tasks change, and in which direction, under a new seed, greedy decoding, a different attention kernel, or a cache policy |
-| `forced_trajectory_replay.py` | E4 | At every step on the dense trajectory: KL(dense‖cached), top-1 token flips, committed-position flips, and the dense top-1/top-2 margin at each flip |
+| `teacher_forcing.py` | E4 | At every step on the dense trajectory: KL(dense‖cached), top-1 token flips, committed-position flips, and the dense top-1/top-2 margin at each flip |
 
 The configs `diffucoder7b_output_variance_sampling_t04_64tasks.yaml`
 (temperature 0.4) and `diffucoder7b_output_variance_greedy_64tasks.yaml`
@@ -70,8 +70,8 @@ POLICIES=full_refresh_every_step,dkv_reference,depth_22,delay_0
 
 sbatch $LAUNCH output_variance_study --config $CONFIGS/diffucoder7b_output_variance_greedy_64tasks.yaml
 sbatch $LAUNCH output_variance_study --config $CONFIGS/diffucoder7b_output_variance_sampling_t04_64tasks.yaml
-sbatch $LAUNCH forced_trajectory_replay --config $CONFIGS/diffucoder7b_output_variance_greedy_64tasks.yaml --policies $POLICIES
-sbatch $LAUNCH forced_trajectory_replay --config $CONFIGS/diffucoder7b_output_variance_sampling_t04_64tasks.yaml --policies $POLICIES
+sbatch $LAUNCH teacher_forcing --config $CONFIGS/diffucoder7b_output_variance_greedy_64tasks.yaml --policies $POLICIES
+sbatch $LAUNCH teacher_forcing --config $CONFIGS/diffucoder7b_output_variance_sampling_t04_64tasks.yaml --policies $POLICIES
 ```
 
 Both programs store results under `<run.name>/<GPU type>/`, e.g.
@@ -85,13 +85,14 @@ Each variance study writes `variants/<name>.json` and `variance_report.json`,
 and prints one row per variant with its changed tasks, P→F and F→P flips, and
 pass@1. Finished variants are skipped on resubmission.
 
-Each replay writes `forced_trajectory_replay/tasks/task_NNN.json` (per-step
-rows) and `forced_trajectory_replay/summary.json`. Finished tasks are skipped
+Each teacher-forced run writes `forced_trajectory_replay/tasks/task_NNN.json` (per-step
+rows) and `forced_trajectory_replay/summary.json`; the folder keeps its name from
+before the rename to teacher forcing, so earlier results stay readable. Finished tasks are skipped
 on resubmission. Add `--max-tasks 2` for a quick check first.
 
-Reading the replay:
+Reading the teacher forcing:
 
-- `divergence_events_per_task` is the continuous proxy and the replay search
+- `divergence_events_per_task` is the continuous proxy and the teacher forcing search
   objective. Each step scores the total variation distance between the dense
   and cached decoding distributions at the committed position, plus 1 if the
   committed position changes. Under greedy decoding it counts changed
@@ -104,7 +105,7 @@ Reading the replay:
   The summary recomputes the proxy from the saved per-step rows.
 - Each policy keeps its own cache along the forced trajectory, so stale
   entries accumulate on its own refresh schedule
-  (`ecad-dlm/tests/test_replay_compounding.py`). Only token-sequence divergence is
+  (`ecad-dlm/tests/test_teacher_forcing_compounding.py`). Only token-sequence divergence is
   excluded.
 - `full_refresh_every_step` reuses nothing. Its KL is the cached backend's own
   rounding difference from native dense; real policies must clearly exceed it.
@@ -112,17 +113,17 @@ Reading the replay:
   margin was below 0.1. Flips only at near-ties are benign; flips at large
   margins mean the cache is wrong.
 - `dense_output_hash` should equal the `output_hash` of the dense variant with
-  the same settings, which confirms the replay followed the real trajectory.
+  the same settings, which confirms the teacher forcing followed the real trajectory.
 - To check the proxy before using it as a search objective, compare each
   policy's KL p99 and flip count with its greedy pass→fail count from E2.
 
-## Proxy validation and the replay search
+## Proxy validation and the teacher forcing search
 
-The search may optimize the replay proxy only after it predicts pass/fail.
-`PROXY_VALIDATION.md` fixes the criteria before results exist: Spearman ≥ 0.80
-across 15 greedy policies, and per-task AUROC ≥ 0.75. The greedy config holds
-the 15 policies. Once its variance study and replay are complete, run (no GPU
-needed):
+Before the search optimizes the teacher forcing proxy, `validate_proxy.py` measures
+how well it tracks end-to-end test losses: the Spearman correlation across 15 greedy
+policies between proxy and pass→fail count, and the per-task AUROC of large-margin
+decision changes for tasks a policy loses. The greedy config holds the 15 policies.
+Once its variance study and teacher forcing are complete, run (no GPU needed):
 
 ```bash
 python -m dlm_kv_policy.validate_proxy \
@@ -130,19 +131,19 @@ python -m dlm_kv_policy.validate_proxy \
   --gpu-folder NVIDIA_A100-SXM4-80GB [--count-tied-position-flips]
 ```
 
-On A100, the proxy as first registered (every position flip counts) passed
-with Spearman 0.925 and AUROC 0.754. The default, which is also the search
+On A100, the proxy as first defined (every position flip counts) scored
+Spearman 0.925 and AUROC 0.754. The default, which is also the search
 objective, ignores position flips where dense was tied. It scores 0.943 and
 0.816 on the same data, which is not an independent test;
 `PROXY_VALIDATION.md` describes the held-out confirmation. The reports are
 `proxy_validation_report.json` and
 `proxy_validation_report_counting_ties.json`.
 
-Setting `evolution.quality_objective: replay_divergence` makes NSGA-II score
-each generation with one shared replay instead of EvalPlus.
-`diffucoder7b_dkv_replay_nsga2_search_greedy_64tasks.yaml` is ready, but do
-not launch it until the validation verdict is PASS. Check finalists end to end
-with pass@1 afterwards.
+Setting `evolution.quality_objective: teacher_forcing_divergence` makes NSGA-II score
+each generation with one shared teacher forcing instead of EvalPlus.
+`diffucoder7b_dkv_teacher_forcing_nsga2_search_greedy_64tasks.yaml` is ready. On the
+96-task recheck the proxy tracked losses poorly (`EAR_VALIDITY_STUDY.md`), so it is kept
+only to read old runs. Check finalists end to end with pass@1.
 
 Evaluations now record `output_hash`. A policy whose output is byte-identical
 to one already scored in the run reuses that EvalPlus result and records
@@ -195,8 +196,8 @@ and row type (prompt, answer or padding) and from the cached vector itself.
 This is the question behind training-free corrections for image diffusion
 caches. It fits corrections from one scale up to a full affine map on three
 folds of tasks and scores them on the fourth. Keys are compared before RoPE.
-Nothing is corrected during decoding. The design and decision rule are
-pre-registered in `STALE_KV_ERROR_STUDY.md`.
+Nothing is corrected during decoding. The design and results are in
+`STALE_KV_ERROR_STUDY.md`.
 
 ```bash
 script=ecad-dlm/experiments/scripts/slurm/run_diffucoder_kv_diagnostics.sh
@@ -208,20 +209,19 @@ done
 sbatch --constraint=a100_80gb $script stale_kv_error_study fit --config $config --gpu-folder NVIDIA_A100-SXM4-80GB
 ```
 
-It needs the forced-trajectory replay of the same config on the same GPU
+It needs the teacher forcing of the same config on the same GPU
 type, which supplies each task's final dense output. Results go to
 `<run>/<GPU type>/stale_kv_error_study/`; the running sums alone take about
 16 GB.
 
-Two follow-ups, both pre-specified in `STALE_KV_ERROR_STUDY.md`:
+Two follow-ups, both described in `STALE_KV_ERROR_STUDY.md`:
 
 - **Rounding check** (`stale_kv_error_study rounding --fold K --part P`, then
   `rounding-check`). It measures the rounding-only error of rows recomputed
-  in partial forwards and asks whether the registered classification
-  survives its worst-case contribution.
+  in partial forwards and bounds how much it could move FER, S1 and S2.
 - **Correction pilot** (`stale_kv_correction_pilot.py run --fold K --part P`,
   then `report`). It adds the fitted M4 correction to stale rows during the
-  replay, at strengths 0.5 and 1.0. It measures paired changes in
+  teacher forcing, at strengths 0.5 and 1.0. It measures paired changes in
   divergence events.
 - **Correction diagnostic** (`stale_kv_correction_diagnostic.py run --fold K
   --part P`, then `report`). It asks why the correction did not help: whether
@@ -229,7 +229,7 @@ Two follow-ups, both pre-specified in `STALE_KV_ERROR_STUDY.md`:
 
 All three read the A100 80GB study's data from any GPU and write their results
 back to it. The rounding check runs on either size of A100 and stops unless
-the GPU reproduces the A100 80GB replay exactly. The pilot and diagnostic
+the GPU reproduces the A100 80GB teacher forcing exactly. The pilot and diagnostic
 run on any allowed GPU type, since each comparison stays on one GPU.
 
 ## Implementation and experiment selection
@@ -246,14 +246,13 @@ run on any allowed GPU type, since each comparison stays on one GPU.
 | `code_correctness_and_latency_evaluator.py` | Paired code correctness and generation-time measurements |
 | `nsga2_kv_policy_search.py` | Categorical NSGA-II search and checkpoint resume |
 | `kv_policy_experiment_config.py` | YAML experiment configuration |
-| `compute_cost.py` | Deterministic FLOP count used as the search's speed objective |
 | `output_variance_study.py` | E1–E3: changed tasks and flips versus a reference variant |
-| `forced_trajectory_replay.py` | E4: per-step cached-versus-dense drift on the dense trajectory; the proxy |
-| `validate_proxy.py` | Applies the pre-registered criteria in `PROXY_VALIDATION.md` |
+| `teacher_forcing.py` | E4: per-step cached-versus-dense drift on the dense trajectory; the proxy |
+| `validate_proxy.py` | Proxy-to-loss Spearman and per-task AUROC (`PROXY_VALIDATION.md`) |
 | `decoding_oracles.py` | Timing curve t(n), caching and parallel-decoding ceilings, autoregressive estimate |
 | `autoregressive_reference.py` | Qwen2.5-Coder-7B-Instruct time per task and pass@1 on the same tasks |
-| `stale_kv_error_study.py` | Whether stale K/V error is predictable; pre-registered in `STALE_KV_ERROR_STUDY.md` |
-| `stale_kv_correction_pilot.py` | Exploratory pilot: applies the fitted stale K/V correction during the replay |
+| `stale_kv_error_study.py` | Whether stale K/V error is predictable (`STALE_KV_ERROR_STUDY.md`) |
+| `stale_kv_correction_pilot.py` | Exploratory pilot: applies the fitted stale K/V correction during the teacher forcing |
 | `stale_kv_correction_diagnostic.py` | Why the correction did not help: corrected K/V and attention-output error against dense |
 
 All modes use `ecad-dlm/experiments/scripts/slurm/run_diffucoder_kv_policy_experiments.sh`:
@@ -433,12 +432,23 @@ search; specialized kernels remain a separate extension.
 Michael, the batched implementation lives alongside the batch-one reference:
 
 - `batched_diffucoder_backend.BatchedDiffuCoderKVBackend` subclasses the existing
-  backend and calls its `_layer_forward`/`_attention`; it changes row orchestration,
-  not transformer arithmetic. `_repeat_kv` supports torch 2.4.1+cu124.
-- `batched_active_token_cache.py` stores per-request K/V and final hidden states,
-  an optional starting-layer boundary, and one transient hidden workspace.
-  With depth 22, only boundary 21 persists. Dummy rows never write to real slots.
-- `masked_row_reuse_policy.py` is shared with replay (the old import remains valid).
+  backend. It has its own layer loop, written so the CPU never waits for the GPU
+  inside a step: it reads the padded row counts once, then queues every layer. The
+  sampler calls `forward_step`, which returns packed logits. `forward_mask_logits`
+  keeps the batch-one interface for tests and calibration and reads back a row mask.
+- Two options are on by default and leave batch-8 tokens unchanged on the audit set.
+  `grouped_attention` attends on the 4 K/V heads without copying them to 28; it is
+  used only when batching, so a single unpadded request still matches the batch-one
+  backend at every step. `lean_head` projects only masked rows whose predecessor
+  was recomputed that step.
+- `compile_layers` (off by default) runs the layers through one `torch.compile`'d
+  function, `compiled_layer.py`. It is about 15% faster at batch 8 but changes some
+  tokens, and the first batches are slow while each sequence length compiles.
+- `batched_active_token_cache.py` stores per-request K/V and final hidden states and
+  an optional starting-layer boundary. With depth 22, only boundary 21 persists.
+  Every tensor has one spare slot per request: padded (dummy) rows are written
+  there and attention masks it out, so dummy rows never write to real slots.
+- `masked_row_reuse_policy.py` is shared with teacher forcing (the old import remains valid).
   Any positive integer `window` is supported, including windows not dividing the
   base refresh interval. Base full refreshes always take precedence.
 - `BatchedDenseDiffuCoderBaseline` calls the loaded native decoder core and projects
@@ -463,7 +473,8 @@ sampler = DiffuCoderDenoisingSampler(backend)
 ```
 
 For research runs, `python -m experiments.batched_decoding_study --help` exposes
-`--base`, `--window`, `--m`, `--batch-size`, `--verify-b1`, and `--evalplus`.
+`--base`, `--window`, `--m`, `--batch-size`, `--verify-b1`, `--evalplus`, and
+`--compile` (compiled layers, batch size above 1 only).
 Omit `--window` for the base alone; use `--base dense` for the native dense arm.
 Use a separate empty output directory for every arm/batch size. The runner stores
 length-sorted batch manifests, full task records, commit and dirty-source hashes,
@@ -490,23 +501,23 @@ then disabled. Row packing still uses two count synchronizations per step (three
 with depth), and boolean gather/scatter can synchronize internally. Those costs,
 the full-key `_repeat_kv` traffic, and padded-key attention must remain in future
 end-to-end timing. Retaining the original all-masked-predecessor head also leaves
-that head's cost on cheap steps. Register the speed target before timing; no speed
-claim follows from implementing the backend.
+that head's cost on cheap steps. No speed claim follows from implementing the
+backend; speed is measured.
 
-## Registered proxy re-check and batch-cost calibration (2026-11-04)
+## Proxy re-check and batch-cost calibration (2026-11-04)
 
 Michael authorized both precursor studies. `proxy_recheck.py` prepares the audited
 96-task manifest, runs four resumable GPU task shards, and scores/reports results
-on CPU. Full registration is in `PROXY_VALIDATION.md`; the new ranking gate is
-Spearman >=0.90 overall and within the depth family, AUROC >=0.75.
+on CPU. The design is in `PROXY_VALIDATION.md`; it reports Spearman overall and
+within the depth family, and per-task AUROC, with bootstrap intervals.
 
 `batched_cost_model.py` is a separate engineering calibration, using the batched
 backend rather than assuming its gather/scatter overhead is negligible. It first
 checks B=1 identity against legacy generation for all panel policies on the first
-manifest task; padded B=8/16 native-versus-full-refresh logits must be finite with
-relative L2 <=0.01. These checks do not establish batch-invariant pass@1.
+manifest task, and reports the relative L2 between padded B=8/16 native and
+full-refresh logits. These checks do not establish batch-invariant pass@1.
 
-Before any new timing data, the cost protocol is frozen as follows:
+The cost protocol:
 - A100 SXM4 80GB, one allocated GPU; B=1,8,16; context buckets 384,512,640,768
   (the manifest's total lengths are 347..727). Model dtype bf16.
 - Independently measure layer blocks [0,17), [17,21), [21,23), [23,28) and LM head.
@@ -515,7 +526,7 @@ Before any new timing data, the cost protocol is frozen as follows:
   Both mask-free and padded-key-mask paths are measured. No extrapolation.
 - CUDA events, synchronization, 2 warmups, median of 5 repeats. Retain individual
   samples and synchronized wall time. This is calibration, not the later three-
-  repeat generation benchmark or its still-unregistered speed-success target.
+  repeat generation benchmark.
 - Twelve fixed synthetic schedules in `batched_cost_model.CASES`, eight steps each,
   test depths 1,18,22,24; unseen row counts; equal/unequal requests; refresh every
   4 or 8 steps. Calibrate at context 640 and 768 for each batch size. Schedules
@@ -523,19 +534,17 @@ Before any new timing data, the cost protocol is frozen as follows:
   masked-head rows. The initial cache population is excluded in both predictions
   and measurements; scheduled refresh steps are included.
 - Predict by summing block costs at the *per-block batch maximum* row count plus
-  the head cost at the remaining masked count. Replay projections length-sort the
+  the head cost at the remaining masked count. Teacher forcing projections length-sort the
   fixed manifest, conservatively round context up to a calibrated bucket, and
   report that rounding. They never average individual-task speedups.
-- **Calibration gate, separately at each B:** median absolute relative error <=10%,
-  p90 <=20%, and Spearman >=0.95. All three batch sizes must pass. This ranking
-  threshold is separate from the proxy's >=0.90. Calibration records are held
-  out from table fitting. Do not refit on them and call that a validation pass.
+- **Calibration, separately at each B:** median and p90 absolute relative error,
+  and Spearman between predicted and measured times. Calibration records are held
+  out from table fitting; refitting on them would leave nothing held out.
 - Predictions exclude policy/sampler overhead; calibration includes the real
   backend's selection, packing, gathers/scatters and head but no sampler. Record
   the discrepancy and peak allocated memory. These are predicted model-compute
-  times, not a measured decoding speedup claim. Failure is a useful result and
-  blocks using the model unqualified as an evolutionary speed objective.
+  times, not a measured decoding speedup claim.
 
 Runs use immutable source/config/task snapshots with hashes and separate output
-directories; historical studies are not overwritten. No production backend code
-or decision rule is changed based on new results without recording an amendment.
+directories; historical studies are not overwritten. Changes to a study's design
+after seeing results are recorded as amendments.

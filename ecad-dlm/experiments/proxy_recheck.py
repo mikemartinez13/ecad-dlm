@@ -1,4 +1,4 @@
-"""Registered diverse-policy proxy check; CPU preparation/report, GPU task shards."""
+"""Diverse-policy proxy recheck: proxy-to-loss Spearman and per-task AUROC; CPU preparation/report, GPU task shards."""
 from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
@@ -21,13 +21,11 @@ from dlm_kv_policy.masked_row_reuse_backend import MaskedRowReuseBackend
 from dlm_kv_policy.batched_diffucoder_backend import BatchedDiffuCoderKVBackend
 from dlm_kv_policy.dense_diffucoder_baseline import DenseDiffuCoderBaseline, BatchedDenseDiffuCoderBaseline
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-from .batched_decoding_study import source_provenance
-from dlm_kv_policy.forced_trajectory_replay import replay_task, load_top_p_logits, step_divergence, large_margin_decision_changes
+from utils.ranking import auc_score, rank_score
+from utils.results_io import save, source_provenance
+from dlm_kv_policy.teacher_forcing import SAVED_KEY, teacher_force_task, load_top_p_logits, step_divergence, large_margin_decision_changes
 
 SEED = 20261104
-SPEARMAN = 0.90
-AUROC = 0.75
-MIN_FAILURES = 10
 # name, full refresh interval, depth, masked window, protected size, rule
 PANEL = [
     ('refresh_256',256,1,None,32,'split+recent'), ('depth_22',8,22,None,32,'split+recent'),
@@ -39,13 +37,6 @@ PANEL = [
 ]
 
 
-def save(path, data):
-    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + '.tmp')
-    temporary.write_text(json.dumps(data, indent=2, default=str, allow_nan=False))
-    temporary.replace(path)
-
-
 def policies(stop_ids, panel=PANEL):
     result = {}
     for name, interval, depth, window, m, rule in panel:
@@ -54,8 +45,9 @@ def policies(stop_ids, panel=PANEL):
     return result
 
 
-def backend(model, policy, batched=False):
-    if batched: return BatchedDiffuCoderKVBackend(model,policy)
+def backend(model, policy, batched=False, compile_layers=False):
+    if batched: return BatchedDiffuCoderKVBackend(model,policy,compile_layers=compile_layers)
+    if compile_layers: raise ValueError('compile_layers needs the batched backend')
     return (MaskedRowReuseBackend if isinstance(policy,MaskedRowReusePolicy) else DiffuCoderActiveTokenKVBackend)(model,policy)
 
 
@@ -154,26 +146,26 @@ def run(config_path, output, part, parts):
         task=ev.tasks[index];seed_everything(config.generation.seed+index)
         prompt,mask=prepare_diffucoder_prompt_batch(tok,[task.prompt],config.model.device)
         candidates=policies(stop)
-        replay_backends={name:backend(model,p) for name,p in candidates.items()}
+        teacher_forcing_backends={name:backend(model,p) for name,p in candidates.items()}
         # Identity sentinel verifies the wrapper with r=1 on both committed-row bases.
         for name in ('refresh_256','depth_22'):
-            replay_backends[name+'_check_r1']=backend(model,MaskedRowReusePolicy(candidates[name],1,32,'split+recent',stop))
+            teacher_forcing_backends[name+'_check_r1']=backend(model,MaskedRowReusePolicy(candidates[name],1,32,'split+recent',stop))
         row_counts={name:[] for name in candidates}
         for name in candidates:
-            original=replay_backends[name].forward_mask_logits
+            original=teacher_forcing_backends[name].forward_mask_logits
             def record_forward(_original=original,_name=name,**kw):
                 result=_original(**kw);d=result.decision
                 row_counts[_name].append({'active':int(d.active.sum()),'full_depth':int((d.active & d.refresh_depth.le(1)).sum()),'masked':result.mask_logits.shape[0]})
                 return result
-            replay_backends[name].forward_mask_logits=record_forward
-        print(f'part {part}: task {index} replay',flush=True)
-        replay=replay_task(model,reference_sampler,replay_backends,prompt,mask,config.generation,load_top_p_logits(model))
+            teacher_forcing_backends[name].forward_mask_logits=record_forward
+        print(f'part {part}: task {index} teacher forcing',flush=True)
+        teacher_forcing=teacher_force_task(model,reference_sampler,teacher_forcing_backends,prompt,mask,config.generation,load_top_p_logits(model))
         from .stale_kv_error_study import same_steps
         for name in ('refresh_256','depth_22'):
-            if not same_steps(replay['policies'][name],replay['policies'][name+'_check_r1']): raise RuntimeError('r1 mismatch')
-        for instance in replay_backends.values():
+            if not same_steps(teacher_forcing['policies'][name],teacher_forcing['policies'][name+'_check_r1']): raise RuntimeError('r1 mismatch')
+        for instance in teacher_forcing_backends.values():
             instance.__dict__.pop('forward_mask_logits',None)
-        del instance, original, record_forward, replay_backends
+        del instance, original, record_forward, teacher_forcing_backends
         generations={}; dense_result=None
         for name in ['dense','dense_repeat','dense_math',*candidates]:
             print(f'part {part}: task {index} generation {name}',flush=True)
@@ -194,27 +186,13 @@ def run(config_path, output, part, parts):
                 assert_same(result,dense_batched,'dense');del dense_batched
             elif name=='dense_repeat': assert_same(result,dense_result,name)
             ids=result.sequences[0,prompt.shape[1]:].cpu().tolist()
-            if name=='dense' and ids!=replay['dense_token_ids']: raise RuntimeError('Dense replay/generation mismatch')
+            if name=='dense' and ids!=teacher_forcing['dense_token_ids']: raise RuntimeError('Dense teacher forcing/generation mismatch')
             response=tok.decode(ids,skip_special_tokens=True)
             generations[name]={'token_ids':ids,'output':make_code_task_output(task,response)}
         record={'signature':signature,'task_id':task.task_id,'index':index,'prompt_tokens':prompt.shape[1],
-            'gpu':torch.cuda.get_device_name(),'stop_ids':sorted(stop),'replay':replay,'rows':row_counts,'generations':generations,
+            'gpu':torch.cuda.get_device_name(),'stop_ids':sorted(stop),SAVED_KEY:teacher_forcing,'rows':row_counts,'generations':generations,
             'identity_passed':True}
         save(path,record);print(f'part {part}: {index} {task.task_id} complete',flush=True)
-
-
-def rank_score(x,y):
-    from scipy.stats import spearmanr
-    if len(set(x))<2 or len(set(y))<2: return None
-    return float(spearmanr(x,y).statistic)
-
-
-def auc_score(scores,labels):
-    from scipy.stats import rankdata
-    labels=np.asarray(labels,dtype=bool);scores=np.asarray(scores)
-    n=int(labels.sum());m=len(labels)-n
-    if n==0 or m==0:return None
-    return float((rankdata(scores)[labels].sum()-n*(n+1)/2)/(n*m))
 
 
 def assessment(proxy, task_proxy, passes, reference, indices):
@@ -225,10 +203,8 @@ def assessment(proxy, task_proxy, passes, reference, indices):
     rank=rank_score(x,losses.sum(axis=1))
     scores=task_proxy[:,indices][:,ref].ravel();labels=losses[:,ref].ravel()
     auc=auc_score(scores,labels)
-    a='INCONCLUSIVE' if rank is None else ('PASS' if rank>=SPEARMAN else 'FAIL')
-    b='INCONCLUSIVE' if int(losses.sum())<MIN_FAILURES or auc is None else ('PASS' if auc>=AUROC else 'FAIL')
-    verdict='FAIL' if 'FAIL' in (a,b) else ('PASS' if a==b=='PASS' else 'INCONCLUSIVE')
-    return {'spearman':rank,'auroc':auc,'ranking_verdict':a,'task_verdict':b,'verdict':verdict,
+    # None when undefined (no rank variation, or one label class); read the AUROC with 'regressions'.
+    return {'spearman':rank,'auroc':auc,
         'regressions':int(losses.sum()),'distinct_regression_tasks':int(losses.any(0).sum()),
         'per_policy_regressions':losses.sum(1).tolist(),'per_policy_recoveries':gains.sum(1).tolist()}
 
@@ -259,11 +235,11 @@ def evaluate(config_path, output, cost_table=None):
                 status=base_statuses({'code_execution':result})
                 statuses[name]=np.array([status[r['task_id']]=='pass' for r in records])
             scores[name+'_'+scope]={'aggregate':result['aggregate'],'datasets':{k:v['aggregate'] for k,v in result['datasets'].items()}}
-    proxy=np.array([[sum(step_divergence(s) for s in r['replay']['policies'][name]) for r in records] for name in names])
-    task_proxy=np.array([[large_margin_decision_changes(r['replay']['policies'][name]) for r in records] for name in names])
+    proxy=np.array([[sum(step_divergence(s) for s in r[SAVED_KEY]['policies'][name]) for r in records] for name in names])
+    task_proxy=np.array([[large_margin_decision_changes(r[SAVED_KEY]['policies'][name]) for r in records] for name in names])
     passes=np.array([statuses[name] for name in names]);anchor=names.index('depth_22')
     local=[i for i,n in enumerate(names) if n.startswith('depth_') and n!='depth_22']
-    summary={'thresholds':{'spearman':SPEARMAN,'auroc':AUROC,'minimum_failures':MIN_FAILURES},'scores':scores,'views':{}}
+    summary={'scores':scores,'views':{}}
     rng=np.random.default_rng(SEED)
     for label,pr,tp,pa,ref,view_names in [
         ('overall',proxy,task_proxy,passes,statuses['dense'],names),
@@ -275,21 +251,20 @@ def evaluate(config_path, output, cost_table=None):
             value[metric+'_ci95']=np.quantile(vals,[.025,.975]).tolist() if vals else None
             value[metric+'_valid_bootstraps']=len(vals)
         summary['views'][label]=value
-    summary['verdict']='FAIL' if any(v['verdict']=='FAIL' for v in summary['views'].values()) else ('PASS' if all(v['verdict']=='PASS' for v in summary['views'].values()) else 'INCONCLUSIVE')
     summary['dense_kernel_noise']={'pass_to_fail':int((statuses['dense'] & ~statuses['dense_math']).sum()),'fail_to_pass':int((~statuses['dense'] & statuses['dense_math']).sum())}
     summary['policy_details']={}
     for i,name in enumerate(names):
         answer_total=padding_total=answer_out=padding_out=0
         for r in records:
-            ids=r['replay']['dense_token_ids'];stops=set(r['stop_ids'])
+            ids=r[SAVED_KEY]['dense_token_ids'];stops=set(r['stop_ids'])
             end=next((j for j,t in enumerate(ids) if t in stops),len(ids))
             answer_total+=end;padding_total+=len(ids)-end
-            for row in r['replay']['policies'][name]:
+            for row in r[SAVED_KEY]['policies'][name]:
                 for pos in row.get('outside_positions',[]):
                     if pos<end:answer_out+=1
                     else:padding_out+=1
         summary['policy_details'][name]={'mean_divergence':float(proxy[i].mean()),
-            'compute_fraction':sum(r['replay']['flops'][name] for r in records)/sum(r['replay']['dense_flops'] for r in records),
+            'compute_fraction':sum(r[SAVED_KEY]['flops'][name] for r in records)/sum(r[SAVED_KEY]['dense_flops'] for r in records),
             'answer_coverage':1-answer_out/answer_total if answer_total else None,
             'padding_coverage':1-padding_out/padding_total if padding_total else None}
     if cost_table is not None:

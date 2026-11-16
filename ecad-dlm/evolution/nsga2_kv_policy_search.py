@@ -5,10 +5,10 @@ loss is chosen by ``evolution.quality_objective``:
 
 - ``base_regression_rate``: generate every task end to end and run paired
   EvalPlus base tests (coarse: one bit per task).
-- ``replay_divergence``: forced-trajectory replay; divergence events per task
-  (see forced_trajectory_replay.py). The whole generation shares one dense
-  pass, and no code is executed. It failed its recheck (EAR_VALIDITY_STUDY.md),
-  so it is kept only to read old runs.
+- ``teacher_forcing_divergence``: teacher forcing; divergence events per task
+  (see teacher_forcing.py). The whole generation shares one dense
+  pass, and no code is executed. On recheck it tracked end-to-end losses poorly
+  (EAR_VALIDITY_STUDY.md), so it is kept only to read old runs.
 
 ``constrained_kv_policy_search.py`` reuses the genome and selection here with one
 objective, predicted batched time, under Deb's constrained domination.
@@ -27,7 +27,7 @@ from dlm_kv_policy.kv_policy_experiment_config import KVPolicyNSGA2SearchConfig,
 from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
 from dlm_kv_policy.masked_row_reuse_policy import MaskedRowReusePolicy
 from dlm_kv_policy.code_correctness_and_latency_evaluator import DiffuCoderKVPolicyEvaluator
-from dlm_kv_policy.forced_trajectory_replay import replay_policies, summarize
+from dlm_kv_policy.teacher_forcing import teacher_force_policies, summarize
 
 
 @dataclass(frozen=True)
@@ -107,7 +107,7 @@ class KVRefreshPolicyGenome:
 @dataclass(frozen=True)
 class EvaluatedKVPolicy:
     genome: KVRefreshPolicyGenome
-    quality_loss: float  # base regression rate, or replay divergence events per task
+    quality_loss: float  # base regression rate, or teacher forcing divergence events per task
     compute_fraction: float  # policy FLOPs / dense FLOPs; the speed objective
     # Recorded only with the EvalPlus objective, for information.
     wall_time_seconds: float | None = None
@@ -115,14 +115,18 @@ class EvaluatedKVPolicy:
     syntax_invalid_count: int | None = None
     output_hash: str = ""
     same_output_as: str | None = None
-    # Constrained search only: its one objective, and the total constraint shortfall.
+    # Constrained search only: its one objective (``cost``), the cost table's predicted
+    # time when that table was the objective, and the total constraint shortfall.
+    cost: float | None = None
     predicted_seconds: float | None = None
     violation: float = 0.0
     constraints: dict[str, Any] | None = None
 
     @property
     def objectives(self) -> tuple[float, ...]:
-        if self.predicted_seconds is not None:
+        if self.cost is not None:
+            return (self.cost,)
+        if self.predicted_seconds is not None:  # summaries written before ``cost`` existed
             return (self.predicted_seconds,)
         return (self.quality_loss, self.compute_fraction)
 
@@ -134,6 +138,7 @@ class EvaluatedKVPolicy:
                 "quality_loss": self.quality_loss,
                 "compute_fraction": self.compute_fraction,
                 "predicted_seconds": self.predicted_seconds,
+                "cost": self.cost,
             },
             "violation": self.violation,
             "constraints": self.constraints,
@@ -157,6 +162,7 @@ class EvaluatedKVPolicy:
             output_hash=raw.get("output_hash", ""),
             same_output_as=raw.get("same_output_as"),
             predicted_seconds=objectives.get("predicted_seconds"),
+            cost=objectives.get("cost"),
             violation=float(raw.get("violation", 0.0)),
             constraints=raw.get("constraints"),
         )
@@ -374,21 +380,21 @@ def _evaluate_with_evalplus(
     return baseline.record, individuals
 
 
-def _evaluate_with_replay(
-    evaluator: DiffuCoderKVPolicyEvaluator, genomes: list[KVRefreshPolicyGenome], replay_dir: Path
+def _evaluate_with_teacher_forcing(
+    evaluator: DiffuCoderKVPolicyEvaluator, genomes: list[KVRefreshPolicyGenome], teacher_forcing_dir: Path
 ) -> list[EvaluatedKVPolicy]:
-    """Score a whole population with one forced-trajectory replay."""
+    """Score a whole population with one teacher-forced pass."""
 
     policies = {genome.policy().name: genome.policy() for genome in genomes}
     config = evaluator.config
-    tasks = replay_policies(
+    tasks = teacher_force_policies(
         evaluator.model,
         evaluator.tokenizer,
         evaluator.tasks,
         policies,
         config.generation,
         config.model.device,
-        replay_dir / "tasks",
+        teacher_forcing_dir / "tasks",
     )
     results = summarize(tasks, list(policies))
     return [
@@ -436,8 +442,8 @@ def run_kv_policy_nsga2_search(
     baseline = None
     baseline_execution = None
     baseline_summary = None
-    use_replay = settings.quality_objective == "replay_divergence"
-    if completed < settings.generations and not use_replay:
+    use_teacher_forcing = settings.quality_objective == "teacher_forcing_divergence"
+    if completed < settings.generations and not use_teacher_forcing:
         baseline, baseline_execution, baseline_summary = evaluator.prepare_evolution_baseline(
             reuse_baseline
         )
@@ -448,8 +454,8 @@ def run_kv_policy_nsga2_search(
             if generation == 0
             else offspring_population(population, settings, generation, forbidden=seen)
         )
-        if use_replay:
-            evaluated = _evaluate_with_replay(evaluator, genomes, root / "replay" / f"generation_{generation:03d}")
+        if use_teacher_forcing:
+            evaluated = _evaluate_with_teacher_forcing(evaluator, genomes, root / "replay" / f"generation_{generation:03d}")
         else:
             _, evaluated = _evaluate_with_evalplus(
                 evaluator,

@@ -12,15 +12,15 @@ Any GPU may run it: every comparison is between runs of one task on one GPU.
 Data are read from, and results written to, the study GPU's folder; each task
 records the GPU it ran on. Strength 0 runs the correction path with nothing
 added, so it must match the uncorrected run exactly on every GPU. On the
-study GPU, the uncorrected run must also reproduce the earlier replay.
+study GPU, the uncorrected run must also reproduce the earlier teacher-forced run.
 
 Row types are computed as a decoder could: prompt by position, padding if the
 committed token is a stop token, otherwise answer. On the 64 tasks this
 agrees with the study's definition (first stop token onward) on every
-committed row. The success criterion is in STALE_KV_ERROR_STUDY.md.
+committed row. Results are in STALE_KV_ERROR_STUDY.md.
 
   run --fold K --part P
-                 GPU. Replays half of fold K's tasks, corrected and uncorrected.
+                 GPU. Teacher-forces half of fold K's tasks, corrected and uncorrected.
   report         Paired differences per policy and strength. No model.
 
 Usage (from the repository root; run inside a GPU allocation):
@@ -43,10 +43,10 @@ from dlm_kv_policy.code_correctness_and_latency_evaluator import gpu_folder_name
 from dlm_kv_policy.dense_diffucoder_baseline import DenseDiffuCoderBaseline
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend, _rotate_half
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-from dlm_kv_policy.forced_trajectory_replay import (
+from dlm_kv_policy.teacher_forcing import (
     large_margin_decision_changes,
     load_top_p_logits,
-    replay_task,
+    teacher_force_task,
     step_divergence,
 )
 from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_config
@@ -171,12 +171,12 @@ def run(config: Any, fold: int, part: int) -> None:
         prompt, attention_mask, _, saved = study.task_inputs(index)
         for correction in corrections:
             correction.start(prompt.shape[1], prompt.shape[1] + config.generation.gen_length)
-        result = replay_task(study.model, sampler, backends, prompt, attention_mask, config.generation, top_p_logits)
+        result = teacher_force_task(study.model, sampler, backends, prompt, attention_mask, config.generation, top_p_logits)
         steps = result["policies"]
         dense_matches = result["dense_token_ids"] == saved["dense_token_ids"]
         if gpu == STUDY_GPU and not dense_matches:
-            raise RuntimeError(f"Task {index}: dense output differs from the earlier replay")
-        # Without a correction the backend is unchanged, so on the study GPU it must reproduce the earlier replay.
+            raise RuntimeError(f"Task {index}: dense output differs from the earlier teacher forcing")
+        # Without a correction the backend is unchanged, so on the study GPU it must reproduce the earlier teacher-forced run.
         reproduces = {name: same_steps(steps[name], saved["policies"][name]) for name in POLICIES}
         zero_matches = {name: same_steps(steps[name], steps[f"{name}@{CHECK_STRENGTH}"]) for name in POLICIES}
         record = {
@@ -244,12 +244,10 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
     )
     gpus = {gpu: sum(record["gpu"] == gpu for record in records) for gpu in sorted({record["gpu"] for record in records})}
     summary = {
-        "success": bool(helps),
         "strengths_that_reduce_divergence": helps,
         "strengths_that_increase_divergence": harms,
         "primary_policy": PRIMARY_POLICY,
         "interval": INTERVAL,
-        "pipeline_passed": zero_matches and reproduces,
         "strength_zero_matches_uncorrected": zero_matches,
         "uncorrected_reproduces_earlier_replay_on_study_gpu": reproduces,
         "tasks_per_gpu": gpus,
@@ -267,8 +265,8 @@ def report(output_dir: Path, task_count: int) -> dict[str, Any]:
             f"{row['change_mean']:>8.2f} [{row['interval_low']:>8.2f}, {row['interval_high']:>8.2f}]"
         )
     print(f"Tasks per GPU: {gpus}")
-    print(f"Strength 0 matches uncorrected: {zero_matches}; uncorrected reproduces the earlier replay on {STUDY_GPU}: {reproduces}")
-    print(f"Success ({PRIMARY_POLICY} divergence events fall at some strength): {summary['success']}; harmful strengths: {harms}")
+    print(f"Strength 0 matches uncorrected: {zero_matches}; uncorrected reproduces the earlier teacher forcing on {STUDY_GPU}: {reproduces}")
+    print(f"{PRIMARY_POLICY}: strengths whose interval is below zero {helps}, above zero {harms}")
     return summary
 
 

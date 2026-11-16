@@ -64,6 +64,8 @@ evolution:
   min_ear: 0.9870
   min_tail_ear: 0.9758
   min_answer_coverage: 0.99
+  # This run ranked by the timed cost table; kept so the config reproduces it.
+  cost_objective: predicted_seconds
   objective_batch_size: 8
   cost_table: /scratch/gqs7zr/ai4mat/ecad/results/dlm_kv_policy/proxy_cost_20261104_v1/cost/table.json
   dense_reference: /scratch/gqs7zr/ai4mat/ecad/results/dlm_kv_policy/constrained_kv_search_v1/dense

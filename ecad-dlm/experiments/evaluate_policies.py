@@ -23,7 +23,8 @@ from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_
 from evolution.nsga2_kv_policy_search import KVRefreshPolicyGenome as Genome
 
 from .ear_validity import pass_fraction
-from .proxy_recheck import backend, generation_settings, save
+from .proxy_recheck import backend, generation_settings
+from utils.results_io import save
 
 
 def load_policies(directory: Path) -> dict[str, Genome]:
@@ -42,7 +43,8 @@ def passes(task: dict[str, Any]) -> tuple[bool, bool]:
     return task["base_status"] == "pass", task["base_status"] == task["plus_status"] == "pass"
 
 
-def evaluate(config_path: Path, directory: Path, output: Path, tasks: int | None, batch: int, timing: bool) -> list[dict[str, Any]]:
+def evaluate(config_path: Path, directory: Path, output: Path, tasks: int | None, batch: int, timing: bool,
+             compile_layers: bool = False) -> list[dict[str, Any]]:
     from dlm_kv_policy.code_correctness_and_latency_evaluator import DiffuCoderKVPolicyEvaluator
     from dlm_kv_policy.dense_diffucoder_baseline import BatchedDenseDiffuCoderBaseline
 
@@ -64,7 +66,7 @@ def evaluate(config_path: Path, directory: Path, output: Path, tasks: int | None
 
     def seconds(make_backend: Any) -> float:
         return measured_batched_seconds(evaluator.model, evaluator.tokenizer, chosen, make_backend, settings,
-                                        config.model.device, batch)
+                                        config.model.device, batch, warm_every_batch=compile_layers)
 
     dense, _ = run("dense", config.policies["dense"])
     dense_seconds = seconds(lambda: BatchedDenseDiffuCoderBaseline(evaluator.model)) if timing else None
@@ -79,9 +81,11 @@ def evaluate(config_path: Path, directory: Path, output: Path, tasks: int | None
             row.update({f"{kind}_pass_at_1": float(policy.mean()), f"{kind}_lost": int((reference & ~policy).sum()),
                         f"{kind}_gained": int((~reference & policy).sum())})
         if timing:
-            row["measured_speedup"] = dense_seconds / seconds(lambda: backend(evaluator.model, genome.policy(stops), batched=True))
+            row["measured_speedup"] = dense_seconds / seconds(
+                lambda: backend(evaluator.model, genome.policy(stops), batched=True, compile_layers=compile_layers))
         rows.append(row)
-        save(output / "policies.json", {"tasks": len(dense), "batch": batch, "dense_base_pass_at_1":
+        save(output / "policies.json", {"tasks": len(dense), "batch": batch, "timing_compiled_layers": compile_layers,
+                                        "dense_base_pass_at_1":
                                         float(np.mean([passes(task)[0] for task in dense.values()])),
                                         "dense_plus_pass_at_1": float(np.mean([passes(task)[1] for task in dense.values()])),
                                         "policies": rows})
@@ -100,8 +104,10 @@ def main() -> None:
     parser.add_argument("--tasks", type=int, help="only the first N tasks, for a quick check")
     parser.add_argument("--batch", type=int, default=8, help="batch size for measured speed")
     parser.add_argument("--no-timing", action="store_true", help="skip measured batched speed")
+    parser.add_argument("--compile", action="store_true",
+                        help="time batched decoding with torch.compile'd layers (about 15%% faster; changes some tokens)")
     args = parser.parse_args()
-    evaluate(args.config, args.policies, args.output, args.tasks, args.batch, not args.no_timing)
+    evaluate(args.config, args.policies, args.output, args.tasks, args.batch, not args.no_timing, args.compile)
 
 
 if __name__ == "__main__":

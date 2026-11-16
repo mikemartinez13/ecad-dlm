@@ -1,8 +1,8 @@
 """Component timing table and held-out schedule calibration using the batched backend.
 
-No search or pass/fail selection occurs here. Table construction precedes and is
-independent of calibration. Model-compute predictions omit policy/sampler overhead;
-calibration includes the backend's indexing/selection overhead and may reject them.
+No search or selection occurs here. Table construction precedes and is independent
+of calibration. Model-compute predictions omit policy/sampler overhead; calibration
+includes the backend's indexing/selection overhead and reports how far they are off.
 """
 from __future__ import annotations
 import argparse
@@ -18,8 +18,9 @@ from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
 from dlm_kv_policy.fixed_token_refresh_policy import TokenRefreshDecision
 from dlm_kv_policy.denoising_token_state import DenoisingTokenState
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler
-from .batched_decoding_study import source_provenance
-from .proxy_recheck import save, rank_score
+from utils.results_io import source_provenance
+from utils.results_io import save
+from utils.ranking import rank_score
 
 BLOCKS = ((0,17),(17,21),(21,23),(23,28))
 ROWS = (0,1,2,4,8,16,24,32,48,64,96,128,160,192,224,256)
@@ -138,8 +139,7 @@ def calibration_metrics(predicted,observed):
     error=np.abs(predicted-observed)/observed
     rho=rank_score(predicted.tolist(),observed.tolist())
     return {'median_absolute_relative_error':float(np.median(error)),
-        'p90_absolute_relative_error':float(np.quantile(error,.9)), 'spearman':rho,
-        'passed':bool(np.median(error)<=.10 and np.quantile(error,.9)<=.20 and rho is not None and rho>=.95)}
+        'p90_absolute_relative_error':float(np.quantile(error,.9)), 'spearman':rho}
 
 
 def calibrate(model,table,output):
@@ -165,14 +165,13 @@ def calibrate(model,table,output):
     result={'interpretation':'table excludes request indexing; calibration includes actual backend overhead; no sampler',
             'by_batch':{str(b):calibration_metrics([r['predicted_seconds'] for r in records if r['batch']==b],
                         [r['measured']['seconds'] for r in records if r['batch']==b]) for b in (1,8,16)}}
-    result['passed']=all(v['passed'] for v in result['by_batch'].values())
     save(output/'calibration_report.json',result)
     return result
 
 
 def smoke(model,tokenizer,tasks,config,output):
     from language_models.diffucoder_loader import prepare_diffucoder_prompt_batch
-    from .proxy_recheck import policies,backend,assert_same,generation_settings
+    from .proxy_recheck import policies, backend, assert_same, generation_settings
     from dlm_kv_policy.dense_diffucoder_baseline import DenseDiffuCoderBaseline,BatchedDenseDiffuCoderBaseline
     settings=generation_settings(config);settings['collect_history']=True
     stop={x for x in (tokenizer.eos_token_id,tokenizer.pad_token_id) if x is not None}

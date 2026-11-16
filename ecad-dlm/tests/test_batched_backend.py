@@ -3,15 +3,15 @@ import copy
 import unittest
 import torch
 from test_backend_cpu import FakeModel
-from test_replay_compounding import greedy_sample_tokens
+from test_teacher_forcing_compounding import greedy_sample_tokens
 from dlm_kv_policy.batched_diffucoder_backend import BatchedDiffuCoderKVBackend
 from dlm_kv_policy.diffucoder_active_token_backend import DiffuCoderActiveTokenKVBackend
 from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
 from dlm_kv_policy.masked_row_reuse_policy import MaskedRowReusePolicy, top_positions
-from experiments.masked_row_reuse_replay import MaskedRowReuseBackend
+from experiments.masked_row_reuse_teacher_forcing import MaskedRowReuseBackend
 from dlm_kv_policy.denoising_token_state import DenoisingTokenState
 from dlm_kv_policy.diffucoder_denoising_sampler import DiffuCoderDenoisingSampler, commit_schedule
-from dlm_kv_policy.batched_row_index import pack_rows
+from utils.row_index import pack_rows, pack_rows_padded
 
 
 def generate(backend, prompt, mask=None, diagnostics=False):
@@ -81,12 +81,81 @@ class BatchedTests(unittest.TestCase):
     def test_dummy_writes_are_discarded(self):
         backend = BatchedDiffuCoderKVBackend(self.model,self.policy())
         backend.start_generation(5,batch_size=2)
-        positions=pack_rows(torch.tensor([[0,1,0,0,0],[1,0,1,0,1]],dtype=torch.bool))
-        self.assertEqual(positions.tolist(),[[1,-1,-1],[0,2,4]])
+        selected=torch.tensor([[0,1,0,0,0],[1,0,1,0,1]],dtype=torch.bool)
+        self.assertEqual(pack_rows(selected).tolist(),[[1,-1,-1],[0,2,4]])
+        positions=pack_rows_padded(selected,3)
+        self.assertEqual(positions.tolist(),[[1,5,5],[0,2,4]])
         keys=torch.ones(2,1,3,4)
         backend.cache.update_kv(0,positions,keys,keys,0)
-        self.assertEqual(backend.cache.keys[0][0].sum().item(),4)
+        # Dummy rows land in the spare slot (index 5); real positions are untouched.
+        self.assertEqual(backend.cache.keys[0][0,:,:5].sum().item(),4)
         self.assertTrue(backend.cache.keys[0][0,:,0].eq(0).all())
+
+    def test_trims_and_packed_sampling_do_not_change_generation(self):
+        # Uneven left padding, both depths, with and without masked-row reuse.
+        prompt=torch.tensor([[0,4,5],[6,7,8]])
+        mask=torch.tensor([[0,1,1],[1,1,1]])
+        for depth in (1,2):
+            for window in (None,2,4):
+                plain=BatchedDiffuCoderKVBackend(self.model,self.policy(depth,window),grouped_attention=False,lean_head=False)
+                # Hiding forward_step sends the sampler down the forward_mask_logits path.
+                plain.forward_step=None
+                expected=generate(plain,prompt,mask)
+                for options in ({},{'grouped_attention':False},{'lean_head':False},{'grouped_attention':False,'lean_head':False}):
+                    with self.subTest(depth=depth,window=window,**options):
+                        actual=generate(BatchedDiffuCoderKVBackend(self.model,self.policy(depth,window),**options),prompt,mask)
+                        for x,y in zip(expected.history,actual.history):
+                            self.assertTrue(torch.equal(x,y))
+
+    def test_compiled_layers_refuse_other_layer_forms(self):
+        # The compiled function repeats DiffuCoder's layer arithmetic; the fake layers differ.
+        with self.assertRaises(TypeError):
+            BatchedDiffuCoderKVBackend(self.model,self.policy(),compile_layers=True)
+        with self.assertRaises(ValueError):
+            BatchedDiffuCoderKVBackend(self.model,self.policy(),compile_layers=True,grouped_attention=False)
+
+    def test_layer_function_matches_dream_shaped_layers(self):
+        # Layers shaped like DiffuCoder's (RMS norm, gated SiLU MLP, no output bias). The
+        # compiler is replaced by the plain function, which checks the wiring on CPU.
+        from torch import nn
+        from unittest import mock
+        from dlm_kv_policy import compiled_layer
+
+        class Norm(nn.Module):
+            def __init__(self):
+                super().__init__(); self.weight = nn.Parameter(torch.rand(8) + 0.5); self.variance_epsilon = 1e-6
+            def forward(self, x):
+                return self.weight * (x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.variance_epsilon))
+
+        class MLP(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.gate_proj, self.up_proj, self.down_proj = (nn.Linear(8, 16, bias=False), nn.Linear(8, 16, bias=False),
+                                                                nn.Linear(16, 8, bias=False))
+                self.act_fn = nn.SiLU()
+            def forward(self, x):
+                return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+        model = FakeModel().eval()
+        for layer in model.model.layers:
+            layer.input_layernorm, layer.post_attention_layernorm, layer.mlp = Norm(), Norm(), MLP()
+            layer.self_attn.o_proj = nn.Linear(8, 8, bias=False)
+        prompt=torch.tensor([[0,4,5],[6,7,8]])
+        mask=torch.tensor([[0,1,1],[1,1,1]])
+        for depth in (1,2):
+            expected=generate(BatchedDiffuCoderKVBackend(model,self.policy(depth,2)),prompt,mask)
+            with mock.patch.object(compiled_layer,'compiled_layer_function',lambda: compiled_layer.layer_function):
+                actual=generate(BatchedDiffuCoderKVBackend(model,self.policy(depth,2),compile_layers=True),prompt,mask)
+            for x,y in zip(expected.history,actual.history):
+                self.assertTrue(torch.equal(x,y))
+
+    def test_lean_head_projects_fewer_rows(self):
+        prompt=torch.tensor([[4,5,6]])
+        rows={}
+        for lean in (False,True):
+            backend=BatchedDiffuCoderKVBackend(self.model,self.policy(1,4),lean_head=lean)
+            rows[lean]=sum(r['head_rows'] for r in generate(backend,prompt,diagnostics=True).diagnostics['rows'])
+        self.assertLess(rows[True],rows[False])
 
     def test_schedule_keeps_zero_and_final_double_commit(self):
         schedule=commit_schedule(torch.linspace(1,1e-12,257),256)

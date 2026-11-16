@@ -1,4 +1,4 @@
-"""Shared masked-row reuse policy for replay and batched decoding."""
+"""Shared masked-row reuse policy for teacher forcing and batched decoding."""
 from __future__ import annotations
 from typing import Any
 from numbers import Integral
@@ -52,6 +52,7 @@ class MaskedRowReusePolicy:
             self.name += f"_h{entropy_threshold:g}{entropy_scope}"
         self.stop_ids = sorted(stop_ids)
         self.confidence = self.top1 = self.protected = self.mask_positions = None
+        self._slots = self._stops = None
 
     def validate(self) -> None:
         self.base.validate()
@@ -74,15 +75,28 @@ class MaskedRowReusePolicy:
 
     def reset(self, sequence_length: int, device: torch.device, batch_size: int | None = None) -> None:
         self.batched = batch_size is not None
-        shape = (sequence_length,) if batch_size is None else (batch_size, sequence_length)
         # The confidence and top-1 token each position had when its logits were last computed.
-        self.confidence = torch.full(shape, -torch.inf, device=device)
-        self.top1 = torch.full(shape, -1, dtype=torch.long, device=device)
+        if batch_size is None:
+            self._slots = None
+            self.confidence = torch.full((sequence_length,), -torch.inf, device=device)
+            self.top1 = torch.full((sequence_length,), -1, dtype=torch.long, device=device)
+            return
+        # Batched storage has one spare slot per request, which takes the dummy rows of
+        # observe_rows; confidence and top1 are views of the real positions.
+        shape = (batch_size, sequence_length + 1)
+        self._slots = (torch.full(shape, -torch.inf, device=device), torch.full(shape, -1, dtype=torch.long, device=device))
+        self.confidence, self.top1 = self._slots[0][:, :sequence_length], self._slots[1][:, :sequence_length]
+
+    def _stop_tensor(self, device: torch.device) -> torch.Tensor:
+        # Built once: creating it on the GPU every step would wait for the transfer.
+        if self._stops is None or self._stops.device != device:
+            self._stops = torch.tensor(self.stop_ids, device=device)
+        return self._stops
 
     def protected_positions(self, mask: torch.Tensor, decoded_age: torch.Tensor) -> torch.Tensor:
         """Step 0's rule on the policy's own (stale) confidences; bool over positions."""
 
-        padding_like = torch.isin(self.top1, torch.tensor(self.stop_ids, device=mask.device))
+        padding_like = torch.isin(self.top1, self._stop_tensor(mask.device))
         protected = top_positions(self.confidence, mask & ~padding_like, self.m)
         protected |= top_positions(self.confidence, mask & padding_like, PADDING_TOP)
         if self.rule == "split+recent":
@@ -120,7 +134,7 @@ class MaskedRowReusePolicy:
         if not (refresh and refresh_padding):
             self.protected = self.protected_positions(mask, decoded_age if self.batched else decoded_age[0])
             if refresh:
-                padding_like = torch.isin(self.top1, torch.tensor(self.stop_ids, device=mask.device))
+                padding_like = torch.isin(self.top1, self._stop_tensor(mask.device))
                 self.protected = self.protected | (mask & ~padding_like)
             predictors = torch.zeros_like(mask)
             predictors[..., :-1] = self.protected[..., 1:]
@@ -144,4 +158,12 @@ class MaskedRowReusePolicy:
         self.confidence[self.mask_positions] = entropy_confidence(logits, 0.0, 1.0, None).float()
         self.top1[self.mask_positions] = logits.argmax(dim=-1)
 
+    def observe_rows(self, positions: torch.Tensor, confidence: torch.Tensor, top1: torch.Tensor) -> None:
+        """Batched ``observe`` for packed rows [batch, rows]; position == sequence length is a dummy row.
 
+        Rows left out keep their stored values, which is what recomputing their
+        logits from an unchanged hidden state would give.
+        """
+
+        self._slots[0].scatter_(1, positions, confidence)
+        self._slots[1].scatter_(1, positions, top1)
