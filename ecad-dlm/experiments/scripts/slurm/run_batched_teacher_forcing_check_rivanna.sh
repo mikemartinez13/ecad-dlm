@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Batched teacher forcing check (experiments/BATCHED_TEACHER_FORCING_CHECK.md) on one A100 80GB.
-# Started by submit_batched_teacher_forcing_check_rivanna.sh from a source snapshot. Every
-# stage skips finished tasks, so resubmitting the same snapshot resumes.
+# Started by submit_batched_teacher_forcing_check_rivanna.sh on a frozen commit. Every
+# stage skips finished tasks, so resubmitting resumes.
 set -euo pipefail
-cd "${SLURM_SUBMIT_DIR:?Submit from the source snapshot}"
+cd "${SLURM_SUBMIT_DIR:?Start through scripts/slurm/run_frozen.sh}"
 export PYTHONPATH="$PWD/ecad-dlm:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

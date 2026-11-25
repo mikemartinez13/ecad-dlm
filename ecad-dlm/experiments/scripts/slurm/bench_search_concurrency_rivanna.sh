@@ -2,11 +2,13 @@
 # Teacher forcing throughput with 1-4 search processes sharing one A100 80GB.
 # Every process teacher-forces the same 3 tasks (part 0 of 32) for one generation's genomes
 # into its own folder, so the counts are comparable. Task file times give seconds per
-# task without model loading. Submit from a source snapshot:
+# task without model loading. Submit on a frozen commit, from the repository root:
 #   sbatch --account=raiselab-paid --partition=gpu --constraint=a100_80gb --gres=gpu:1 \
-#       --cpus-per-task=8 --mem=96G --time=02:30:00 bench_search_concurrency_rivanna.sh
+#       --cpus-per-task=8 --mem=96G --time=02:30:00 scripts/slurm/run_frozen.sh "$PWD" \
+#       "$(scripts/slurm/freeze_source.sh --again search_concurrency_bench)" \
+#       bash ecad-dlm/experiments/scripts/slurm/bench_search_concurrency_rivanna.sh
 set -euo pipefail
-cd "${SLURM_SUBMIT_DIR:?Submit from the source snapshot}"
+cd "${SLURM_SUBMIT_DIR:?Start through scripts/slurm/run_frozen.sh}"
 export PYTHONPATH="$PWD/ecad-dlm:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Vectorized scoring check (experiments/BATCHED_TEACHER_FORCING_CHECK.md) on one A100 80GB.
 # Reuses the first check's trajectories and per-task-scored records in $OUTPUT. Started by
-# submit_batched_scoring_check_rivanna.sh from a source snapshot; finished tasks are skipped.
+# submit_batched_scoring_check_rivanna.sh on a frozen commit; finished tasks are skipped.
 set -euo pipefail
-cd "${SLURM_SUBMIT_DIR:?Submit from the source snapshot}"
+cd "${SLURM_SUBMIT_DIR:?Start through scripts/slurm/run_frozen.sh}"
 export PYTHONPATH="$PWD/ecad-dlm:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

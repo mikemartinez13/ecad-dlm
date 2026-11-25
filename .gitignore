@@ -26,6 +26,8 @@ results/dlm_kv_policy/
 results/diffucoder_cache_validation/
 
 # Local experiment artifacts and Slurm output
+# Frozen source copies that Slurm jobs run from (the submit scripts write them)
+/run_snapshots/
 /scratch
 /slurm-*.out
 # Pinned upstream checkout; provenance and installation are in DREAM_REASONING.md.

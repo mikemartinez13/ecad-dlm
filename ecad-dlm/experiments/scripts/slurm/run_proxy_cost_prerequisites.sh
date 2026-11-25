@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Submit from the frozen source snapshot. Resource requests are explicit in sbatch.
+# Started through scripts/slurm/run_frozen.sh. Resource requests are explicit in sbatch.
 set -euo pipefail
 MODE="${1:?proxy, cost or report}"
 shift
-cd "${SLURM_SUBMIT_DIR:?Submit from the source snapshot}"
+cd "${SLURM_SUBMIT_DIR:?Start through scripts/slurm/run_frozen.sh}"
 export PYTHONPATH="$PWD/ecad-dlm:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

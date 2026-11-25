@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Rivanna paths. Submit from the frozen source snapshot; resources are explicit in sbatch.
+# Rivanna paths. Started through scripts/slurm/run_frozen.sh; resources are explicit in sbatch.
 set -euo pipefail
 MODE="${1:?proxy, cost, report, ear, ear-report, search-advance, search-evaluate, search-dense, search-check, search-audit, search-plus, evaluate-policies, tau, tau-time, tau-report, cost-panel-time or cost-panel-report}"
 shift
-cd "${SLURM_SUBMIT_DIR:?Submit from the source snapshot}"
+cd "${SLURM_SUBMIT_DIR:?Start through scripts/slurm/run_frozen.sh}"
 export PYTHONPATH="$PWD/ecad-dlm:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

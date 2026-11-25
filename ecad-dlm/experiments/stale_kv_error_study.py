@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import random
 import subprocess
 import warnings
@@ -76,6 +77,7 @@ from dlm_kv_policy.dkv_decode_refresh_policy import DKVDecodeRefreshPolicy
 from dlm_kv_policy.fixed_token_refresh_policy import TokenRefreshDecision
 from dlm_kv_policy.teacher_forcing import SAVED_FOLDER, load_top_p_logits, teacher_force_task
 from dlm_kv_policy.kv_policy_experiment_config import load_kv_policy_experiment_config
+from utils.results_io import source_commit
 
 POLICIES = ("refresh_4", "refresh_32", "refresh_256")
 # refresh_4 is reported, but its ages are too short for the main summary.
@@ -631,9 +633,11 @@ class Study:
         def git(*args: str) -> str:
             return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
 
+        frozen = bool(os.environ.get("ECAD_SOURCE_COMMIT"))
         info = {
-            "commit": git("rev-parse", "HEAD"),
-            "uncommitted_changes": bool(git("status", "--porcelain", "--untracked-files=no")),
+            "commit": source_commit(),
+            # A frozen run's commit holds its working tree, so it has no uncommitted changes.
+            "uncommitted_changes": False if frozen else bool(git("status", "--porcelain", "--untracked-files=no")),
             "gpu": gpu_folder_name(),
             "layers_kv_heads_head_dim": self.shape,
             "policies": {name: self.config.dkv_policies[name].to_dict() for name in POLICIES},

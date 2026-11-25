@@ -13,6 +13,11 @@ not automatically submit a continuation or mark an unfinished search complete.
 Inspect `progress.md`, `activity.json`, `generation_history.csv`, and the Slurm
 `long-23088501.out` log as the run progresses. Earlier execution notes below are history.
 
+Source snapshots: the `run_snapshots/<run>` folders named below were moved into git on
+2026-11-25, byte for byte, as `refs/runs/<run>/<time>.legacy` (see "Slurm runs and frozen
+sources" in `ecad-dlm/README.md`); `git archive` on that ref gives a run's files back.
+New runs freeze their source with `scripts/slurm/freeze_source.sh`.
+
 Michael, the active scope is now GSM8K only. MATH search and MATH audit work are
 abandoned as of 2026-11-17; the historical results and frozen snapshots remain for
 provenance. MATH configurations are disabled, and submission/resume launchers

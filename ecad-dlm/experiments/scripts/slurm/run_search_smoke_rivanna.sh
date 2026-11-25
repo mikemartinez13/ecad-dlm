@@ -3,7 +3,7 @@
 # to its first 16 tasks and one generation. dense -> advance -> evaluate -> advance, then each
 # policy's EAR against run 2's batch-one records of the same tasks. Submits nothing else.
 set -euo pipefail
-cd "${SLURM_SUBMIT_DIR:?Submit from the source snapshot}"
+cd "${SLURM_SUBMIT_DIR:?Start through scripts/slurm/run_frozen.sh}"
 export PYTHONPATH="$PWD/ecad-dlm:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
