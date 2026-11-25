@@ -161,13 +161,13 @@ class DiffuCoderDenoisingSampler:
         algorithm_temperature: float,
         collect_history: bool = False,
         collect_diagnostics: bool = False,
+        eps: float = 1e-12,
     ) -> DenoisingGenerationResult:
         batched = getattr(self.backend, "supports_batch", False)
         if prompt.ndim != 2 or prompt.shape[0] == 0 or (prompt.shape[0] != 1 and not batched):
             raise ValueError("The active sampler initially supports one prompt at a time")
-        if batched and (algorithm != "entropy" or temperature != 0 or algorithm_temperature != 0
-                        or top_p != 1 or top_k is not None):
-            raise ValueError("Batched decoding currently requires greedy entropy, top_p=1, top_k=None")
+        if batched and (algorithm != "entropy" or algorithm_temperature != 0 or top_k is not None):
+            raise ValueError("Batched decoding requires deterministic entropy ordering and top_k=None")
         if steps < 1 or gen_length < 1 or prompt.shape[1] < 1:
             raise ValueError("Positive steps, generation length and nonempty prompts are required")
         mask_token_id = int(self.model.config.mask_token_id)
@@ -181,11 +181,16 @@ class DiffuCoderDenoisingSampler:
         start_options = {"batch_size": prompt.shape[0]} if batched else {}
         self.backend.start_generation(x.shape[1], collect_diagnostics=collect_diagnostics, **start_options)
         history: list[torch.Tensor] = []
-        timesteps = torch.linspace(1, 1e-12, steps + 1, device=x.device)
+        if not 0 < eps < 1:
+            raise ValueError("eps must be between zero and one")
+        timesteps = torch.linspace(1, eps, steps + 1, device=x.device)
         schedule = commit_schedule(timesteps, gen_length) if batched else None
         # Backends with forward_step return packed logits; commits then need no boolean
         # indexing, so the loop never waits for the GPU between steps.
-        packed = batched and getattr(self.backend, "forward_step", None) is not None
+        # Stochastic Dream must resample ALL masked rows each step, including stale
+        # rows. Reusing previously sampled tokens would change its distribution.
+        packed = (batched and temperature == 0 and top_p == 1
+                  and getattr(self.backend, "forward_step", None) is not None)
         confidence = proposed = None
         if x.is_cuda:
             torch.cuda.synchronize(x.device)

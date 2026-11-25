@@ -67,6 +67,8 @@ class BatchedDiffuCoderKVBackend(DiffuCoderActiveTokenKVBackend):
         if self.num_heads % self.num_kv_heads:
             raise ValueError("Query heads must be a multiple of key/value heads")
         self.grouped_attention, self.lean_head = grouped_attention, lean_head
+        self.confidence_temperature, self.confidence_top_p = 0.0, 1.0
+        self.confidence_top_p_logits = None
         self.depth = min(base.refresh_depth, self.num_layers)
         self.cache = BatchedActiveTokenKVCache(
             num_layers=self.num_layers, hidden_size=self.hidden_size,
@@ -203,7 +205,9 @@ class BatchedDiffuCoderKVBackend(DiffuCoderActiveTokenKVBackend):
         predecessors = (positions - 1).clamp(min=0, max=length - 1)
         logits = self.model.lm_head(self.cache.final(predecessors))
         if self.reuse and head_count:
-            self.policy.observe_rows(positions, entropy_confidence(logits, 0.0, 1.0, None).float(),
+            self.policy.observe_rows(positions, entropy_confidence(
+                logits, self.confidence_temperature, self.confidence_top_p,
+                self.confidence_top_p_logits).float(),
                                      logits.argmax(dim=-1))
         if self.record_rows:
             self.row_history.append({"step": step, "active": decision.active.sum(-1).cpu().tolist(),

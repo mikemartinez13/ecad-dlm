@@ -1,0 +1,104 @@
+audit_top: 2
+batch_size: 8
+data_root: /scratch/gqs7zr/dream_reasoning/data_v2
+grouped_attention: false
+model_path: /scratch/gqs7zr/cache/huggingface/hub/models--Dream-org--Dream-v0-Instruct-7B/snapshots/05334cb9faaf763692dcf9d8737c642be2b2a6ae
+search:
+  cost_objective: padded_flops
+  crossover_probability: 0.9
+  delays:
+  - 1
+  - 2
+  - 3
+  entropy_scopes:
+  - local
+  - full
+  entropy_thresholds:
+  - 0.0
+  - 0.25
+  - 0.5
+  - 1.0
+  - 1.5
+  generations: 6
+  local_refresh_radii:
+  - 0
+  - 2
+  - 4
+  - 6
+  - 8
+  masked_windows:
+  - 1
+  - 2
+  - 4
+  - 8
+  - 16
+  objective_batch_size: 8
+  padding_windows:
+  - 0
+  - 16
+  - 32
+  - 64
+  - 128
+  - 256
+  population_size: 12
+  prompt_refresh_intervals:
+  - 0
+  - 8
+  - 32
+  - 64
+  - 128
+  - 256
+  protected_rules:
+  - split
+  - split+recent
+  protected_sizes:
+  - 8
+  - 16
+  - 24
+  - 32
+  - 48
+  - 64
+  quality_objective: constrained_ear_flops
+  refresh_depths:
+  - 1
+  - 18
+  - 22
+  - 24
+  refresh_intervals:
+  - 4
+  - 8
+  - 16
+  - 32
+  - 64
+  seed: 20261116
+  terminal_refresh_steps:
+  - 0
+  - 8
+  - 16
+  two_gene_mutation_probability: 0.2
+seed: 20261116
+temperature: 0.1
+top_p: 0.9
+stages:
+- calibration
+- search
+- audit
+calibration_split: gsm8k_calibration_v2
+search_split: gsm8k_search_v2
+quality_metric: flexible_extract
+audit_splits:
+- gsm8k_dev_holdout
+- math500_unseen_audit
+initial_genomes:
+- delay: 2
+  refresh_interval: 8
+  refresh_depth: 22
+  terminal_refresh: 0
+  masked_window: 4
+  protected_size: 32
+  protected_rule: split+recent
+  prompt_refresh_interval: 32
+  local_refresh_radius: 4
+  padding_window: 0
+  entropy_threshold: 0.0
+  entropy_scope: local

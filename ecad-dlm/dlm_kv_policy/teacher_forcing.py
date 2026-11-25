@@ -94,14 +94,19 @@ def decoding_distribution(logits: torch.Tensor, temperature: float, top_p: float
     return torch.softmax(logits, dim=-1)
 
 
-def expected_acceptance(dense_log_probs: torch.Tensor, cached_log_probs: torch.Tensor) -> torch.Tensor:
+def expected_acceptance(dense_log_probs: torch.Tensor, cached_log_probs: torch.Tensor,
+                        top_k: int | None = EAR_TOP_K) -> torch.Tensor:
     """Per-row EAR (their Eq. 3): the sum of min(p, q) over dense's top tokens.
 
     p and q stay full-vocabulary probabilities at temperature 1, not renormalized
     over the top tokens, so a row is at most 1 - TV(p, q) plus the excluded tail.
     """
 
-    values, tokens = dense_log_probs.topk(min(EAR_TOP_K, dense_log_probs.shape[-1]), dim=-1)
+    # None is exact full-vocabulary overlap = 1 - TV. Preserve the legacy default
+    # for historical DiffuCoder thresholds; Dream explicitly opts into full EAR.
+    if top_k is None:
+        return torch.minimum(dense_log_probs, cached_log_probs).exp().sum(dim=-1)
+    values, tokens = dense_log_probs.topk(min(top_k, dense_log_probs.shape[-1]), dim=-1)
     return torch.minimum(values, cached_log_probs.gather(-1, tokens)).exp().sum(dim=-1)
 
 
@@ -116,6 +121,7 @@ def step_metrics(
     top_p: float = 1.0,
     top_p_logits=None,
     answer_rows: torch.Tensor | None = None,
+    ear_top_k: int | None = EAR_TOP_K,
 ) -> dict[str, float | bool]:
     """Compare dense and cached logits for one step.
 
@@ -127,7 +133,7 @@ def step_metrics(
     dense_log_probs = F.log_softmax(dense_logits.float(), dim=-1)
     cached_log_probs = F.log_softmax(cached_logits.float(), dim=-1)
     kl_per_row = (dense_log_probs.exp() * (dense_log_probs - cached_log_probs)).sum(dim=-1)
-    ear_per_row = expected_acceptance(dense_log_probs, cached_log_probs)
+    ear_per_row = expected_acceptance(dense_log_probs, cached_log_probs, ear_top_k)
 
     dense_top2 = dense_log_probs[committed_rows].exp().topk(2, dim=-1).values
     dense_margin = (dense_top2[:, 0] - dense_top2[:, 1]).min()

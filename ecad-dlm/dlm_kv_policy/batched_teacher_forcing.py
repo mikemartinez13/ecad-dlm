@@ -104,7 +104,9 @@ class _DenseStep:
         self.index = torch.tensor(index, device=logits.device, dtype=torch.long)
         self.log_probs = F.log_softmax(logits.float(), dim=-1)
         self.probs = self.log_probs.exp()
-        self.top_values, self.top_tokens = self.log_probs.topk(min(EAR_TOP_K, logits.shape[-1]), dim=-1)
+        self.ear_top_k = getattr(generation, "ear_top_k", EAR_TOP_K)
+        if self.ear_top_k is not None:
+            self.top_values, self.top_tokens = self.log_probs.topk(min(self.ear_top_k, logits.shape[-1]), dim=-1)
         chosen = logits[self.index]
         self.argmax = chosen.argmax(dim=-1)
         self.decoding = decoding_distribution(chosen, generation.temperature, generation.top_p, top_p_logits)
@@ -119,7 +121,8 @@ class _DenseStep:
         log_probs = F.log_softmax(logits.float(), dim=-1)
         values = {
             "kl": (self.probs * (self.log_probs - log_probs)).sum(dim=-1),
-            "ear": torch.minimum(self.top_values, log_probs.gather(-1, self.top_tokens)).exp().sum(dim=-1),
+            "ear": (torch.minimum(self.log_probs, log_probs).exp().sum(dim=-1) if self.ear_top_k is None
+                    else torch.minimum(self.top_values, log_probs.gather(-1, self.top_tokens)).exp().sum(dim=-1)),
         }
         del log_probs
         confidence = entropy_confidence(logits, generation.temperature, generation.top_p, self.top_p_logits)
@@ -299,6 +302,7 @@ def teacher_force_batch(
                     dense_logits[b], logits[b], rows_on_device[b], confidence,
                     dense_confidence=dense_confidence[b], temperature=generation.temperature,
                     top_p=generation.top_p, top_p_logits=top_p_logits, answer_rows=answer_rows[b],
+                    ear_top_k=getattr(generation, "ear_top_k", EAR_TOP_K),
                 )
                 metrics["committed_positions"] = [masked[b][row] for row in committed[b]]
                 if candidates is not None:

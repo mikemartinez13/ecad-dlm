@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/DreamLM/Dream",
+  "commit": "31f94a60d187e3fd481fee3bbc2c732eb94a879c",
+  "local_directory": "Dream",
+  "model": "Dream-org/Dream-v0-Instruct-7B",
+  "model_revision": "05334cb9faaf763692dcf9d8737c642be2b2a6ae",
+  "protocol": "Dream/eval_instruct/eval.sh",
+  "gsm8k_prompt_and_scoring": "Dream/eval_instruct/lm_eval/tasks/gsm8k/gsm8k-cot.yaml",
+  "math_prompt_and_scoring": "Dream/eval_instruct/lm_eval/tasks/minerva_math/utils.py",
+  "dependencies": {"math-verify": "0.8.0", "antlr4-python3-runtime": "4.11.1"},
+  "comparison_sources": [
+    "https://arxiv.org/html/2505.22618v1",
+    "https://github.com/NVlabs/Fast-dLLM/blob/main/v1/dream/eval.md",
+    "https://arxiv.org/abs/2509.23094",
+    "https://github.com/Kamichanw/d2Cache",
+    "https://arxiv.org/abs/2505.15781"
+  ]
+}

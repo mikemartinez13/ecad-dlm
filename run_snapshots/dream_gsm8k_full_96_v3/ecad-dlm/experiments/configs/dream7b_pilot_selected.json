@@ -1,0 +1,41 @@
+[
+  {
+    "genome": {
+      "delay": 2,
+      "refresh_interval": 8,
+      "refresh_depth": 22,
+      "terminal_refresh": 0,
+      "masked_window": 4,
+      "protected_size": 32,
+      "protected_rule": "split+recent",
+      "prompt_refresh_interval": 32,
+      "local_refresh_radius": 4,
+      "padding_window": 0,
+      "entropy_threshold": 0.0,
+      "entropy_scope": "local"
+    },
+    "policy_name": "ga_d2_r8_l22_t0_p32_n4_w4_m32_split+recent",
+    "objectives": {
+      "quality_loss": 0.018697927066059994,
+      "compute_fraction": 0.3317102845028169,
+      "predicted_seconds": null,
+      "cost": 0.3317102845028169
+    },
+    "violation": 0.0,
+    "constraints": {
+      "ear": 0.98130207293394,
+      "ear_95_ci": [
+        0.97869665906641,
+        0.9839022000875304
+      ],
+      "tail_ear": 0.9709358961842155,
+      "padded_compute_fraction": 0.3317102845028169,
+      "answer_coverage": 0.9977815681813111
+    },
+    "median_generation_wall_time": null,
+    "candidate_base_pass_at_1": null,
+    "syntax_invalid_count": null,
+    "output_hash": "",
+    "same_output_as": null
+  }
+]

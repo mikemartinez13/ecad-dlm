@@ -140,9 +140,9 @@ class KVPolicyNSGA2SearchConfig:
 
     def validate(self) -> None:
         choices = self.choices()
-        if self.quality_objective not in {"base_regression_rate", "teacher_forcing_divergence", "constrained_batched_time"}:
+        if self.quality_objective not in {"base_regression_rate", "teacher_forcing_divergence", "constrained_batched_time", "constrained_ear_flops"}:
             raise ValueError(
-                "evolution.quality_objective must be base_regression_rate, teacher_forcing_divergence or constrained_batched_time"
+                "Unknown evolution.quality_objective"
             )
         if self.cost_objective not in {"flops", "padded_flops", "predicted_seconds"}:
             raise ValueError("evolution.cost_objective must be flops, padded_flops or predicted_seconds")

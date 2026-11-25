@@ -28,6 +28,8 @@ results/diffucoder_cache_validation/
 # Local experiment artifacts and Slurm output
 /scratch
 /slurm-*.out
+# Pinned upstream checkout; provenance and installation are in DREAM_REASONING.md.
+/Dream/
 
 # Pycharm
 .idea/
